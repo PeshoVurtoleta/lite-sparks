@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>lite-spark Playground</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: system-ui, sans-serif;
+            transition: background-color 0.3s;
+        }
+
+        /* Strict Theme Control */
+        body.dark {
+            background-color: #0d0d12;
+            color: #ffffff;
+        }
+
+        body.light {
+            background-color: #e2e8f0;
+            color: #1a202c;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        #panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            width: 320px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            transition: background 0.3s, border 0.3s;
+        }
+
+        body.light #panel {
+            background: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(0, 0, 0, 0.1);
+        }
+
+        body.light label, body.light h2, body.light span {
+            color: #1a202c !important;
+        }
+
+        h2 {
+            margin: 0 0 15px 0;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .control-group {
+            margin-bottom: 12px;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            margin-bottom: 4px;
+            font-weight: 600;
+        }
+
+        input[type=range] {
+            width: 100%;
+            margin-bottom: 5px;
+            accent-color: #ff6600;
+        }
+
+        .presets {
+            display: flex;
+            gap: 8px;
+            margin-top: 20px;
+        }
+
+        button {
+            flex: 1;
+            background: #2d3748;
+            color: #fff;
+            border: none;
+            padding: 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: 0.2s;
+        }
+
+        button:hover {
+            background: #4a5568;
+        }
+
+        body.light button {
+            background: #cbd5e0;
+            color: #1a202c;
+        }
+
+        body.light button:hover {
+            background: #a0aec0;
+        }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 15px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body class="dark">
+
+<div id="panel">
+    <h2>Spark Engine Config</h2>
+
+    <div class="control-group">
+        <label>Gravity <span id="gravVal">800</span></label>
+        <input type="range" id="gravity" min="100" max="2000" step="50" value="800">
+    </div>
+
+    <div class="control-group">
+        <label>Bounciness (Restitution) <span id="restVal">0.4</span></label>
+        <input type="range" id="restitution" min="0" max="0.9" step="0.1" value="0.4">
+    </div>
+
+    <div class="control-group">
+        <label>Velocity Stretch <span id="stretchVal">0.04</span></label>
+        <input type="range" id="stretch" min="0.01" max="0.15" step="0.01" value="0.04">
+    </div>
+
+    <div class="toggle-row">
+        <span>Light Mode Background</span>
+        <input type="checkbox" id="bgToggle">
+    </div>
+
+    <div class="presets">
+        <button id="btnWeld">Welding Arc</button>
+        <button id="btnImpact">Impact</button>
+        <button id="btnDrip">Molten Drip</button>
+    </div>
+</div>
+
+<canvas id="stage"></canvas>
+
+<script type="module">
+    import {SparkEngine} from 'https://esm.run/@zakkster/lite-sparks@1.0.0';
+
+    // --- INLINED ENGINE CODE FOR DEMO ---
+    const DEFAULT_HEAT = [
+        'oklch(0.30 0.20 20)', 'oklch(0.60 0.25 30)', 'oklch(0.85 0.20 70)', 'oklch(0.98 0.05 90)'
+    ];
+
+    // --- APP WIRING ---
+    const canvas = document.getElementById('stage');
+    const ctx = canvas.getContext('2d');
+    const sparks = new SparkEngine();
+
+    let w = 0, h = 0;
+    const dpr = window.devicePixelRatio || 1;
+
+    function updateSize() {
+        w = window.innerWidth;
+        h = window.innerHeight;
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.scale(dpr, dpr);
+    }
+
+    window.addEventListener('resize', updateSize);
+    updateSize();
+
+    // UI WIRING
+    const dom = {
+        grav: document.getElementById('gravity'), gravVal: document.getElementById('gravVal'),
+        rest: document.getElementById('restitution'), restVal: document.getElementById('restVal'),
+        stretch: document.getElementById('stretch'), stretchVal: document.getElementById('stretchVal'),
+        bg: document.getElementById('bgToggle')
+    };
+
+    let currentMode = 'weld';
+
+    function updateUI() {
+        dom.gravVal.innerText = dom.grav.value;
+        dom.restVal.innerText = dom.rest.value;
+        dom.stretchVal.innerText = dom.stretch.value;
+
+        sparks.config.gravity = parseFloat(dom.grav.value);
+        sparks.config.restitution = parseFloat(dom.rest.value);
+        sparks.config.stretch = parseFloat(dom.stretch.value);
+        document.body.className = dom.bg.checked ? 'light' : 'dark';
+    }
+
+    [dom.grav, dom.rest, dom.stretch, dom.bg].forEach(el => el.addEventListener('input', updateUI));
+
+    document.getElementById('btnWeld').onclick = () => {
+        currentMode = 'weld';
+        dom.grav.value = 600;
+        dom.rest.value = 0.5;
+        dom.stretch.value = 0.05;
+        updateUI();
+    };
+    document.getElementById('btnImpact').onclick = () => {
+        currentMode = 'impact';
+        dom.grav.value = 1200;
+        dom.rest.value = 0.3;
+        dom.stretch.value = 0.03;
+        updateUI();
+    };
+    document.getElementById('btnDrip').onclick = () => {
+        currentMode = 'drip';
+        dom.grav.value = 400;
+        dom.rest.value = 0.1;
+        dom.stretch.value = 0.08;
+        updateUI();
+    };
+
+    // INTERACTION & LOOP
+    let isDrawing = false;
+    let mouseX = w / 2, mouseY = h / 2;
+
+    canvas.addEventListener('mousedown', (e) => {
+        isDrawing = true;
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+    });
+    canvas.addEventListener('mousemove', (e) => {
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+    });
+    canvas.addEventListener('mouseup', () => isDrawing = false);
+
+    let lastTime = performance.now();
+
+    function loop(time) {
+        const dt = Math.min((time - lastTime) / 1000, 0.1);
+        lastTime = time;
+
+        if (isDrawing) {
+            if (currentMode === 'weld') {
+                // Emits continuously in a wide cone upwards
+                sparks.burst(mouseX, mouseY, 15, Math.PI + 0.5, Math.PI * 2 - 0.5, 200, 800);
+            } else if (currentMode === 'impact') {
+                // Single huge explosion, then stops drawing to simulate one impact
+                sparks.burst(mouseX, mouseY, 300, 0, Math.PI * 2, 400, 1500, 0.3, 1.2);
+                isDrawing = false;
+            } else if (currentMode === 'drip') {
+                // Slow, heavy slag dripping down
+                sparks.burst(mouseX, mouseY, 5, 0, Math.PI, 10, 150, 1.0, 3.0);
+            }
+        }
+
+        sparks.updateAndDraw(ctx, dt, w, h);
+        requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+</script>
+</body>
+</html>

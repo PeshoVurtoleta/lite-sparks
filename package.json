@@ -1,0 +1,66 @@
+{
+  "name": "@zakkster/lite-sparks",
+  "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
+  "version": "1.0.0",
+  "description": "Zero-GC, SoA spark and debris engine featuring vector velocity stretching, floor restitution, thermodynamic OKLCH heat gradients, and hyper-optimized ballistic physics. Ideal for impacts, welding, grinding, fireworks trails, and high energy VFX.",
+  "type": "module",
+  "main": "SparkEngine.js",
+  "types": "SparkEngine.d.ts",
+  "exports": {
+    ".": {
+      "types": "./SparkEngine.d.ts",
+      "import": "./SparkEngine.js",
+      "default": "./SparkEngine.js"
+    }
+  },
+  "files": [
+    "SparkEngine.js",
+    "SparkEngine.d.ts",
+    "llms.txt",
+    "README.md"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/PeshoVurtoleta/lite-sparks#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PeshoVurtoleta/lite-sparks.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PeshoVurtoleta/lite-sparks/issues",
+    "email": "shinikchiev@yahoo.com"
+  },
+  "dependencies": {
+    "@zakkster/lite-color": "^1.0.5"
+  },
+  "keywords": [
+    "sparks",
+    "spark-engine",
+    "debris",
+    "impact",
+    "welding",
+    "grinding",
+    "particle-engine",
+    "particle-system",
+    "canvas",
+    "2d",
+    "webgl",
+    "oklch",
+    "heat-gradient",
+    "zero-gc",
+    "soa",
+    "ballistic",
+    "restitution",
+    "micro-vfx",
+    "vfx",
+    "javascript",
+    "typescript",
+    "zakkster",
+    "lite-engine"
+  ],
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}
