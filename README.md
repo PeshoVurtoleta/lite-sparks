@@ -1,6 +1,8 @@
 # @zakkster/lite-sparks
 
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-sparks.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-sparks)
+[![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
+![Zero-GC](https://img.shields.io/badge/Zero--GC-Engine-00C853?style=for-the-badge&logo=leaf&logoColor=white)
 [![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-sparks?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-sparks)
 [![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-sparks?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-sparks)
 [![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-sparks?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-sparks)

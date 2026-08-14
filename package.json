@@ -1,14 +1,17 @@
 {
   "name": "@zakkster/lite-sparks",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Zero-GC, SoA spark and debris engine featuring vector velocity stretching, floor restitution, thermodynamic OKLCH heat gradients, and hyper-optimized ballistic physics. Ideal for impacts, welding, grinding, fireworks trails, and high energy VFX.",
   "type": "module",
-  "main": "SparkEngine.js",
-  "types": "SparkEngine.d.ts",
+  "main": "./SparkEngine.js",
+  "module": "./SparkEngine.js",
+  "types": "./SparkEngine.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./SparkEngine.d.ts",
+      "node": "./SparkEngine.js",
       "import": "./SparkEngine.js",
       "default": "./SparkEngine.js"
     }
@@ -17,7 +20,8 @@
     "SparkEngine.js",
     "SparkEngine.d.ts",
     "llms.txt",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "license": "MIT",
   "homepage": "https://github.com/PeshoVurtoleta/lite-sparks#readme",
@@ -29,8 +33,15 @@
     "url": "https://github.com/PeshoVurtoleta/lite-sparks/issues",
     "email": "shinikchiev@yahoo.com"
   },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/PeshoVurtoleta"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "@zakkster/lite-color": "^1.0.5"
+    "@zakkster/lite-color": "^2.1.0"
   },
   "keywords": [
     "sparks",
@@ -43,7 +54,6 @@
     "particle-system",
     "canvas",
     "2d",
-    "webgl",
     "oklch",
     "heat-gradient",
     "zero-gc",
@@ -58,9 +68,12 @@
     "lite-engine"
   ],
   "devDependencies": {
-    "vitest": "^3.0.0"
+    "@zakkster/lite-gc-profiler": "^1.15.0",
+    "@zakkster/lite-leak": "^1.8.1"
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "node --expose-gc --test test/*.test.js",
+    "torture": "node --expose-gc test/torture.mjs",
+    "verify": "npm test && npm run torture"
   }
 }

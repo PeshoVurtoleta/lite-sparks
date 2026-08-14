@@ -1,11 +1,13 @@
 /**
- * @zakkster/lite-sparks v1.0.0
+ * @zakkster/lite-sparks v1.0.2
  * Zero-GC, SoA Spark & Debris Engine
  * Features vector velocity stretching, floor restitution, and a precomputed thermodynamic heat gradient.
  * Supports dark mode (additive blending) and light mode (source-over).
  */
 
 import { toCssOklch } from '@zakkster/lite-color';
+
+export const VERSION = '1.0.2';
 
 const DEFAULT_HEAT = [
     { l: 0.30, c: 0.20, h: 20 },   // Cold/Dying (Cherry Red)
@@ -37,7 +39,7 @@ export class SparkEngine {
         this.vx = new Float32Array(this.max);
         this.vy = new Float32Array(this.max);
         this.life = new Float32Array(this.max);
-        this.invLife = new Float32Array(this.max); // ⚡ Multiplier cache for hyper-fast normalization
+        this.invLife = new Float32Array(this.max); // -> Multiplier cache for hyper-fast normalization
         this.weight = new Float32Array(this.max);
         this.state = new Uint8Array(this.max);
 
@@ -46,6 +48,10 @@ export class SparkEngine {
 
     burst(x, y, count, angleMin, angleMax, speedMin, speedMax, lifeMin = 0.5, lifeMax = 1.5) {
         if (this._destroyed) return;
+        // S-02 count door (cold path): NaN/Infinity/<1 -> 0, and count|0 floors
+        // 1.5 -> 1. Fail closed -- a hostile count is a no-op, not a full-pool fill.
+        count = count >= 1 ? (count | 0) : 0;
+        if (count === 0) return;
         let spawned = 0;
 
         for (let i = 0; i < this.max; i++) {
@@ -60,9 +66,14 @@ export class SparkEngine {
                 this.vx[i] = Math.cos(angle) * speed;
                 this.vy[i] = Math.sin(angle) * speed;
 
-                this.life[i] = lifeMin + this.config.rng() * (lifeMax - lifeMin);
-                // ⚡ Precompute the inverse for the render loop
-                this.invLife[i] = 1.0 / this.life[i];
+                // S-11 (spawn, cold path): clamp life away from 0 so invLife is
+                // never Infinity and colorIdx is never NaN. Also catches an
+                // inverted lifeMin/lifeMax that would compute a negative life.
+                let life = lifeMin + this.config.rng() * (lifeMax - lifeMin);
+                if (life < 1e-4) life = 1e-4;
+                this.life[i] = life;
+                // -> Precompute the inverse for the render loop
+                this.invLife[i] = 1.0 / life;
                 this.weight[i] = 1.0 + this.config.rng() * 3.0;
 
                 if (++spawned >= count) return;
@@ -72,9 +83,13 @@ export class SparkEngine {
 
     updateAndDraw(ctx, dt, w, h) {
         if (this._destroyed) return;
+        // S-01 dt door (cold path): reject NaN, -0, 0, and negatives before the
+        // loop. Fail closed -- a bad dt is a silent no-op frame that leaves the
+        // last good state on screen, never a NaN poisoning every live particle.
+        if (!(dt > 0)) return;
         if (dt > 0.1) dt = 0.1; // Guard against tab-backgrounding teleportation
 
-        // Clear previous frame — sparks are velocity-stretched lines, not bloom dots
+        // Clear previous frame -- sparks are velocity-stretched lines, not bloom dots
         ctx.clearRect(0, 0, w, h);
 
         ctx.lineCap = 'round';
@@ -89,7 +104,7 @@ export class SparkEngine {
                 continue;
             }
 
-            // ⚡ Sleep State: Physics are completely bypassed if the particle rests
+            // -> Sleep State: Physics are completely bypassed if the particle rests
             if (this.vx[i] !== 0 || this.vy[i] !== 0) {
                 this.vy[i] += this.config.gravity * dt;
 
@@ -114,11 +129,11 @@ export class SparkEngine {
                 }
             }
 
-            // ⚡ Fast Index Calculation (Multiplication + Branchless Clamp)
+            // -> Fast Index Calculation (Multiplication + Branchless Clamp)
             let colorIdx = Math.floor((this.life[i] * this.invLife[i]) * this._colorLen);
             colorIdx = colorIdx < 0 ? 0 : colorIdx >= this._colorLen ? this._colorLen - 1 : colorIdx;
 
-            // ⚡ Optimized Pipeline (Math first, Canvas second)
+            // -> Optimized Pipeline (Math first, Canvas second)
             const tailX = this.x[i] - this.vx[i] * this.config.stretch;
             const tailY = this.y[i] - this.vy[i] * this.config.stretch;
 

@@ -1,0 +1,110 @@
+/**
+ * T9 -- controls. Every gate must be provably able to fail.
+ *
+ * Each control runs a deliberately-broken variant IN PROCESS and asserts the
+ * corresponding gate flags it. If a control slips through, T9 itself `die()`s --
+ * a gate that cannot fail is decorative.
+ *
+ * There is also the whole-suite control: `SPARKS_TORTURE_BREAK=1 node
+ * --expose-gc test/torture.mjs` injects retained allocations into the T6 hot
+ * loop, so the alloc gate rejects and the process exits non-zero. T9 exercises
+ * the same alloc lane here so a plain run already proves the gate bites.
+ */
+
+import { SparkEngine } from '../../SparkEngine.js';
+import { makePrng, SEED, runOpsGate, stubCtx, die, aliveFinite } from './harness.mjs';
+
+/** Retained sink so the control's allocations survive GC (arrayBuffers grows). */
+const leak = [];
+
+function makeFloatRng(seed) {
+    const prng = makePrng(seed);
+    return () => prng() / 4294967296;
+}
+
+export function run() {
+    // Control 1 -- the alloc gate. A hot body that retains an allocation every
+    // iteration MUST be rejected by runOpsGate (maxArrayBuffersGrowth:0).
+    const { report } = runOpsGate((i) => { leak.push(new Float64Array(64)); }, {
+        ops: 4000,
+        warmup: 0,
+    });
+    if (report.ok) {
+        die('T9 control: an allocating hot loop passed the zero-alloc gate');
+    }
+    leak.length = 0; // release the control's garbage
+
+    // Control 2 -- the S-01 poison detector. Write NaN straight into a live
+    // particle's vy and confirm `aliveFinite` flips false. Prove it is not
+    // vacuous: the same engine reads finite before the poison.
+    const e = new SparkEngine(64, { rng: () => 0.5 });
+    e.burst(400, 300, 8, 0, Math.PI * 2, 100, 500);
+    if (!aliveFinite(e)) {
+        die('T9 control: aliveFinite false on a healthy burst -- detector is broken');
+    }
+    // Find a live slot and poison it.
+    let victim = -1;
+    for (let i = 0; i < e.max; i++) if (e.state[i] === 1) { victim = i; break; }
+    if (victim === -1) die('T9 control: burst produced no live particle to poison');
+    e.vy[victim] = NaN;
+    if (aliveFinite(e)) {
+        die('T9 control: aliveFinite stayed true after a NaN vy -- the S-01 detector is blind');
+    }
+
+    // Control 2b -- the dt door is load-bearing (S-01). Prove that WITHOUT the
+    // door a NaN dt poisons the engine, so `aliveFinite` catches it -- i.e. the
+    // door, not luck, is the protection. First confirm the real door holds: a
+    // NaN-dt frame through the public API is a no-op and leaves the engine
+    // finite. Then replay the exact first physics op the loop would run with an
+    // un-guarded NaN dt (`vy += gravity * dt`) and confirm it goes non-finite.
+    const d = new SparkEngine(64, { rng: () => 0.5 });
+    d.burst(400, 300, 8, 0, Math.PI * 2, 100, 500);
+    d.updateAndDraw(stubCtx, NaN, 800, 600); // door returns -> no-op
+    if (!aliveFinite(d)) {
+        die('T9 control: the dt door FAILED -- a NaN-dt frame poisoned the engine ' +
+            'through the public API (S-01 regression)');
+    }
+    let dv = -1;
+    for (let i = 0; i < d.max; i++) if (d.state[i] === 1) { dv = i; break; }
+    if (dv === -1) die('T9 control: burst produced no live particle for the dt-door control');
+    // The un-guarded physics step (what the loop does when `!(dt>0)` does NOT
+    // return): dt is NaN, so vy += gravity*NaN -> NaN.
+    d.vy[dv] += d.config.gravity * NaN;
+    if (aliveFinite(d)) {
+        die('T9 control: an un-guarded NaN-dt physics step stayed finite -- ' +
+            'aliveFinite cannot detect the S-01 poison the dt door prevents');
+    }
+
+    // Control 3 -- the determinism comparator. Two engines fed the same seed run
+    // an identical script and MUST agree; perturbing one seeded draw MUST make
+    // the snapshot diverge. If it does not, the T0 determinism law cannot fail.
+    const a = new SparkEngine(64, { rng: makeFloatRng(SEED) });
+    const bRng = makeFloatRng(SEED);
+    bRng(); // perturbation: consume one extra draw so the streams differ
+    const b = new SparkEngine(64, { rng: bRng });
+    const script = (eng) => {
+        for (let f = 0; f < 12; f++) {
+            if ((f % 4) === 0) eng.burst(400, 100, 6, 0, Math.PI * 2, 50, 400, 0.3, 0.9);
+            eng.updateAndDraw(stubCtx, 1 / 60, 800, 600);
+        }
+    };
+    script(a); script(b);
+    let diverged = false;
+    for (let i = 0; i < 64; i++) {
+        if (!Object.is(a.x[i], b.x[i]) || a.state[i] !== b.state[i]) { diverged = true; break; }
+    }
+    if (!diverged) {
+        die('T9 control: a perturbed seeded draw produced an identical snapshot -- ' +
+            'the determinism comparator cannot detect divergence');
+    }
+
+    // Sanity: two UNperturbed streams DO agree (so control 3 is not vacuous).
+    const c1 = new SparkEngine(64, { rng: makeFloatRng(SEED) });
+    const c2 = new SparkEngine(64, { rng: makeFloatRng(SEED) });
+    script(c1); script(c2);
+    for (let i = 0; i < 64; i++) {
+        if (!Object.is(c1.x[i], c2.x[i]) || c1.state[i] !== c2.state[i]) {
+            die('T9 control: two identical seeded streams diverged -- determinism is broken');
+        }
+    }
+}
