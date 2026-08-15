@@ -16,6 +16,14 @@ export interface SparkConfig {
     restitution?: number;
     /** Velocity-direction tail stretch multiplier. Default: 0.04 */
     stretch?: number;
+    /** Alias for `friction`: when non-null it overrides friction (null is not zero). Default: null */
+    drag?: number | null;
+    /** Constant horizontal air push in px/s^2 (+ is rightward). 0 disables the wind term. Default: 0 */
+    wind?: number;
+    /** Gust amplitude in px/s^2: a sin oscillation at TAU/3 rad/s (3s period) added to wind. 0 disables it. Default: 0 */
+    gust?: number;
+    /** Turbulence amplitude in px/s^2: a per-spark curl seeded by invLife. 0 disables it. Default: 0 */
+    turbulence?: number;
     /** true = source-over (light bg), false = additive 'lighter' (dark bg). Default: false */
     transparentBackground?: boolean;
     /** true wipes the canvas each frame; false draws over existing pixels (layer over a game/scratch surface). Default: true */

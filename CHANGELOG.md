@@ -5,6 +5,47 @@ All notable changes to `@zakkster/lite-sparks` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-08-15
+
+Air (roadmap session S4, the aerodynamics wave). Sparks now respond to moving
+air: a constant `wind`, an oscillating `gust`, and a per-spark `turbulence` curl.
+The whole feature is one hoisted `if (aero)` inside the existing moving block --
+when every knob is 0 (the default) `aero` is false and the per-particle body is
+byte-identical to v1.2.0. Proven: a default seeded run's x/y/vx/vy/life/state
+snapshot is Object.is-identical to v1.2.0, and the aero-off render fingerprint is
+unchanged. Zero new allocation and zero new SoA column: turbulence reuses the
+existing per-spawn `invLife` as its phase source, and the engine clock is a
+single cold scalar.
+
+### Added
+
+- **S-13** air forces. Four cold config keys -- `wind` (constant px/s^2
+  horizontal push), `gust` (a sin oscillation at `GUST_HZ = TAU/3` rad/s, a
+  3-second period, added to wind), `turbulence` (a per-spark curl of amplitude
+  `turb`, phase `invLife[i] * TURB_K + elapsed`), and `drag` (a friendlier alias
+  for `friction`). A new cold scalar `_elapsed` accumulates simulated dt and
+  drives the gust oscillator + turbulence phase. The hot loop gains exactly one
+  hoisted `if (aero)` before the floor test; `aero = wind!==0 || gustNow!==0 ||
+  turb!==0`, `gustNow` sampled once per frame in the cold preheader. Rationale in
+  `decisions/0007-drag-terminal-velocity.md` and `decisions/0008-air-forces.md`.
+
+### Changed
+
+- **S-13** `drag` overrides `friction` when non-null AND finite (null is not
+  zero), so the hot path keeps reading exactly one air-friction knob -- no new
+  hot read.
+- **S-13** fail-closed air knobs. A non-finite `wind`/`gust`/`turbulence` is
+  coerced to `0` (off), and a non-finite `drag` is ignored, ONCE in the cold
+  constructor -- a hostile config can never NaN the pool through the aero gate or
+  `pow(drag, dt*60)`. Zero hot bytes (ADR 0008).
+- Torture T0 gains laws 6-9 (aero-off fingerprint == v1.2.0, plus committed
+  per-knob wind/gust/turbulence hashes with direction witnesses); T6 gains four
+  aero lanes (wind / gust / turbulence / all-on) each pinning all 12 backing-store
+  byte lengths; T9 gains two controls proving the `if (aero)` gate is load-bearing
+  (aero leaked onto the aero-off path moves the fingerprint; aero lifted outside
+  the moving block wakes a resting spark). New `test/aero.test.js` boundary suite.
+- `VERSION`, `package.json`, `llms.txt`, and `SparkEngine.d.ts` bumped to `1.3.0`.
+
 ## [1.2.0] - 2026-08-15
 
 Throughput (roadmap session S3, the batching wave). The hot path stops paying

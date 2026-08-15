@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-sparks v1.2.0
+ * @zakkster/lite-sparks v1.3.0
  * Zero-GC, SoA Spark & Debris Engine
  * Features vector velocity stretching, floor restitution, and a precomputed thermodynamic heat gradient.
  * Supports dark mode (additive blending) and light mode (source-over).
@@ -7,12 +7,20 @@
 
 import { toCssOklch } from '@zakkster/lite-color';
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 
 // S-06: post-move X-cull margin. A velocity-stretched tail can trail up to this
 // many px behind the head, so a spark keeps drawing until head+tail clear the
 // margin -- killing the exact-edge tail pop of the old fused pre-move cull.
 const CULL_MARGIN = 200;
+
+// S-13 air forces. GUST_HZ is the gust oscillator's angular frequency: TAU/3
+// rad/s, a 3-second period. TURB_K scales each spark's invLife into its
+// turbulence phase; at >= 1000 the 1/life spread dominates the shared clock so
+// two near-equal-life sparks wander in different directions (ADR 0007/0008).
+const TAU = Math.PI * 2;
+const GUST_HZ = TAU / 3;
+const TURB_K = 1000;
 
 const DEFAULT_HEAT = [
     { l: 0.30, c: 0.20, h: 20 },   // Cold/Dying (Cherry Red)
@@ -30,6 +38,10 @@ export class SparkEngine {
             floorFriction: 0.85,
             restitution: 0.4,
             stretch: 0.04,
+            drag: null,
+            wind: 0,
+            gust: 0,
+            turbulence: 0,
             transparentBackground: false,
             autoClear: true,
             floorY: null,
@@ -37,6 +49,25 @@ export class SparkEngine {
             rng: Math.random,
             ...config
         };
+
+        // S-13 fail-closed air knobs (cold path): a non-finite wind/gust/
+        // turbulence is treated as OFF, sanitized ONCE here so the hot loop never
+        // sees NaN/Infinity. Otherwise `wind=NaN` -> `NaN!==0` true -> aero true
+        // -> `vx += (NaN+..)*dt` NaNs every live moving spark (the S-01 whole-pool
+        // poison class through the config door). Zero hot bytes (ADR 0008).
+        if (!Number.isFinite(this.config.wind)) this.config.wind = 0;
+        if (!Number.isFinite(this.config.gust)) this.config.gust = 0;
+        if (!Number.isFinite(this.config.turbulence)) this.config.turbulence = 0;
+
+        // S-13 drag alias (cold path): `drag` is a friendlier name for the
+        // air-friction retention factor. When provided (!= null; null is not
+        // zero) AND finite it OVERRIDES `friction`, so the hot loop keeps reading
+        // exactly one knob -- no new hot read (ADR 0007). A non-finite drag is
+        // ignored (friction keeps its default/explicit value) so it can never
+        // reach `pow(NaN, dt*60)` and NaN the pool even with aero off.
+        if (this.config.drag != null && Number.isFinite(this.config.drag)) {
+            this.config.friction = this.config.drag;
+        }
 
         this.colors = this.config.heatColors.map(c => typeof c === 'string' ? c : toCssOklch(c));
         this._colorLen = this.colors.length;
@@ -65,6 +96,10 @@ export class SparkEngine {
         this._head = 0;
         // Diagnostic: slots touched by the last burst (cold path, torture witness).
         this._visits = 0;
+
+        // S-13 engine clock: total simulated dt, advanced once per frame in the
+        // cold preheader. Drives the gust oscillator + turbulence phase (ADR 0008).
+        this._elapsed = 0;
 
         this._destroyed = false;
     }
@@ -163,6 +198,19 @@ export class SparkEngine {
         const floorFriction = cfg.floorFriction;
         // S-10 floorY: null means "use h" (null is not zero). Hoisted once.
         const floorBase = cfg.floorY == null ? h : cfg.floorY;
+
+        // S-13 air forces (cold preheader): advance the engine clock, then hoist
+        // the per-frame air constants. gustNow samples the gust oscillator ONCE
+        // this frame; aero is the single hot-loop gate -- every knob 0 -> aero
+        // false -> the per-particle body is byte-identical to v1.2.0 (ADR 0008).
+        this._elapsed += dt;
+        const el = this._elapsed;
+        const wind = cfg.wind;
+        const turb = cfg.turbulence;
+        const gust = cfg.gust;
+        const gustNow = gust !== 0 ? Math.sin(el * GUST_HZ) * gust : 0;
+        const aero = wind !== 0 || gustNow !== 0 || turb !== 0;
+
         const colorLen = this._colorLen;
         const colors = this.colors;
         const max = this.max;
@@ -200,6 +248,21 @@ export class SparkEngine {
 
                 vxs[i] *= f;
                 vys[i] *= f;
+
+                // S-13 air forces (hot, single hoisted gate). Skipped entirely
+                // when every knob is 0 (aero false) -- the aero-off body is
+                // byte-identical to v1.2.0. Wind + gust push one shared
+                // horizontal field; turbulence is a per-spark curl whose phase
+                // is seeded by invLife (rng-derived, unique per spark), so two
+                // sparks wander apart. No new column, no new draw op (ADR 0008).
+                if (aero) {
+                    if (wind !== 0 || gustNow !== 0) vxs[i] += (wind + gustNow) * dt;
+                    if (turb !== 0) {
+                        const p = invLifeA[i] * TURB_K + el;
+                        vxs[i] += Math.cos(p) * turb * dt;
+                        vys[i] += Math.sin(p) * turb * dt;
+                    }
+                }
 
                 xs[i] += vxs[i] * dt;
                 ys[i] += vys[i] * dt;

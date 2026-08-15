@@ -109,4 +109,51 @@ export function run() {
         () => 'T6.B: ring cursor visited ' + ring._visits + ' > ' + (2 * MAX) + ' slots -- not O(count)');
     check(aliveCount(ring) === MAX,
         () => 'T6.B: burst into full pool left ' + aliveCount(ring) + ' alive != ' + MAX);
+
+    // ---- Scene C: S-13 aero lanes -- the air forces allocate nothing --------
+    // Four lanes exercise the hot `if (aero)` branch under a full pool: wind,
+    // gust, turbulence, and all-on. Each runs the same measured window and pins
+    // all TWELVE backing-store byte lengths byte-identical -- the air feature
+    // grows no buffer and the gate rejects a major GC / >4ms pause (ADR 0008).
+    aeroLane('wind', { wind: 300 });
+    aeroLane('gust', { gust: 300 });
+    aeroLane('turb', { turbulence: 400 });
+    aeroLane('all', { wind: 300, gust: 300, turbulence: 400 });
+}
+
+/**
+ * One aero lane: a full pool under sustained emission + physics + render with
+ * an air config on, measured and gated, all 12 backing stores pinned unchanged.
+ */
+function aeroLane(name, config) {
+    const engine = new SparkEngine(MAX, { rng: () => 0.5, ...config });
+    engine.burst(W / 2, H / 2, MAX, 0, TAU, 100, 800);
+
+    const hot = (i) => {
+        if ((i & 63) === 0) engine.burst(W / 2, H / 2, 16, 0, TAU, 100, 800);
+        engine.updateAndDraw(stubCtx, 1 / 60, W, H);
+    };
+
+    const b = snapshot(engine);
+    const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+    const a = snapshot(engine);
+
+    check(a.x === b.x, () => 'T6.aero[' + name + ']: x SoA store grew ' + b.x + ' -> ' + a.x);
+    check(a.y === b.y, () => 'T6.aero[' + name + ']: y SoA store grew ' + b.y + ' -> ' + a.y);
+    check(a.vx === b.vx, () => 'T6.aero[' + name + ']: vx SoA store grew ' + b.vx + ' -> ' + a.vx);
+    check(a.vy === b.vy, () => 'T6.aero[' + name + ']: vy SoA store grew ' + b.vy + ' -> ' + a.vy);
+    check(a.life === b.life, () => 'T6.aero[' + name + ']: life SoA store grew ' + b.life + ' -> ' + a.life);
+    check(a.invLife === b.invLife, () => 'T6.aero[' + name + ']: invLife SoA store grew ' + b.invLife + ' -> ' + a.invLife);
+    check(a.weight === b.weight, () => 'T6.aero[' + name + ']: weight SoA store grew ' + b.weight + ' -> ' + a.weight);
+    check(a.state === b.state, () => 'T6.aero[' + name + ']: state SoA store grew ' + b.state + ' -> ' + a.state);
+    check(a.wBucket === b.wBucket, () => 'T6.aero[' + name + ']: wBucket store grew ' + b.wBucket + ' -> ' + a.wBucket);
+    check(a.order === b.order, () => 'T6.aero[' + name + ']: _order store grew ' + b.order + ' -> ' + a.order);
+    check(a.binCount === b.binCount, () => 'T6.aero[' + name + ']: _binCount store grew ' + b.binCount + ' -> ' + a.binCount);
+    check(a.binStart === b.binStart, () => 'T6.aero[' + name + ']: _binStart store grew ' + b.binStart + ' -> ' + a.binStart);
+
+    if (!report.ok) {
+        const g = summary.gc;
+        die('T6.aero[' + name + '] alloc gate rejected -- verdict=' + report.verdict +
+            ' source=' + summary.source + ' major=' + g.major + ' maxMs=' + g.maxMs.toFixed(3));
+    }
 }

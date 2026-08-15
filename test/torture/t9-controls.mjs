@@ -149,4 +149,67 @@ export function run() {
                 'the dt-scaling tolerance -- the S-04 law (T0 law 4) cannot fail');
         }
     }
+
+    // Control A -- the S-13 aero-off gate (T0 law 6) must be able to FAIL. If the
+    // air force leaked onto the aero-off path (a broken `if (aero)` gate) the
+    // default trajectory would change and law 6's committed AERO_OFF fingerprint
+    // would move. Prove the comparator is not vacuous: an aero-off run and a run
+    // with a tiny LEAKED wind MUST diverge; two aero-off runs MUST agree.
+    {
+        const script = (eng) => {
+            for (let f = 0; f < 40; f++) {
+                if ((f % 5) === 0) eng.burst(400, 300, 8, 0, Math.PI * 2, 50, 400, 0.3, 0.9);
+                eng.updateAndDraw(stubCtx, 1 / 60, 800, 100000); // tall: free flight
+            }
+        };
+        const off = new SparkEngine(64, { rng: makeFloatRng(SEED) });
+        const leak2 = new SparkEngine(64, { rng: makeFloatRng(SEED), wind: 1e-3 }); // gate leak
+        script(off); script(leak2);
+        let diverged = false;
+        for (let i = 0; i < 64; i++) {
+            if (off.state[i] === 1 && !Object.is(off.x[i], leak2.x[i])) { diverged = true; break; }
+        }
+        if (!diverged) {
+            die('T9 control A: a leaked wind on the aero-off path produced an identical ' +
+                'trajectory -- the AERO_OFF fingerprint (T0 law 6) cannot detect an aero gate leak');
+        }
+        // Non-vacuous: two aero-off runs DO agree byte-for-byte.
+        const c1 = new SparkEngine(64, { rng: makeFloatRng(SEED) });
+        const c2 = new SparkEngine(64, { rng: makeFloatRng(SEED) });
+        script(c1); script(c2);
+        for (let i = 0; i < 64; i++) {
+            if (!Object.is(c1.x[i], c2.x[i]) || c1.state[i] !== c2.state[i]) {
+                die('T9 control A: two aero-off runs diverged -- the aero-off path is not deterministic');
+            }
+        }
+    }
+
+    // Control B -- the S-13 "wind wakes resting embers" hazard (REJECTED, ADR
+    // 0008). The aero force lives INSIDE the moving block, guarded by the S-05
+    // sleep check, so a RESTING spark (vx==vy==0) never feels the wind. Prove
+    // BOTH halves: (1) in the real engine a resting spark under strong wind stays
+    // put; (2) the broken variant -- the same aero op applied OUTSIDE the moving
+    // block -- DOES wake it, so the placement inside the block is load-bearing.
+    {
+        // (1) Real engine: a hand-seeded resting spark, strong wind, many frames.
+        const e = new SparkEngine(4, { rng: () => 0.5, wind: 300, gust: 300, turbulence: 400 });
+        e.state[0] = 1; e.x[0] = 400; e.y[0] = 300; e.vx[0] = 0; e.vy[0] = 0; // asleep
+        e.life[0] = 100; e.invLife[0] = 1 / 100; e.weight[0] = 2;
+        const x0 = e.x[0];
+        for (let f = 0; f < 30; f++) e.updateAndDraw(stubCtx, 1 / 60, 800, 600);
+        if (!(e.vx[0] === 0 && e.vy[0] === 0 && e.x[0] === x0)) {
+            die('T9 control B: a resting spark was moved by the air forces -- aero leaked ' +
+                'outside the S-05 moving block and woke a resting ember (ADR 0008 REJECTED case)');
+        }
+
+        // (2) Broken variant: the aero op applied OUTSIDE the moving block (no
+        // sleep guard). A resting vx=0 is nudged to non-zero -- it would wake.
+        const wind = 300, gustNow = Math.sin(0.5 * (Math.PI * 2 / 3)) * 300, dt = 1 / 60;
+        let vx = 0; // a resting spark
+        vx += (wind + gustNow) * dt; // unguarded aero: what a mis-placed block does
+        if (vx === 0) {
+            die('T9 control B: the un-guarded aero op left a resting vx at 0 -- the control ' +
+                'cannot prove that lifting aero outside the moving block wakes a resting spark');
+        }
+    }
 }
