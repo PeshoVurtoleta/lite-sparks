@@ -2,7 +2,7 @@
 
 > Zero-GC SoA spark and debris engine. Velocity stretching, floor bounce, thermodynamic OKLCH heat gradient. One dependency.
 
-Version: 1.1.0
+Version: 1.2.0
 
 ## Install
 npm i @zakkster/lite-sparks
@@ -22,10 +22,13 @@ import { SparkEngine } from '@zakkster/lite-sparks';
 - Heat gradient: 4-stop thermodynamic [cherry red -> orange -> yellow -> white-hot]
 - Color index from remaining life ratio -- sparks cool as they die
 - Pre-parsed OKLCH colors in constructor -- zero allocation in updateAndDraw
+- Batched render: counting-sort into (colorIdx*4 + wBucket) bins -> <= colors.length*4 stroke passes/frame (was one per particle)
+- wBucket: line width quantized to {0..3} at spawn (cold path); render sets width 1..4px per bin
+- Spawn is a ring cursor (head = (head+1) % max), overwrite-oldest -- O(count), evicts the oldest live spark under pressure
 - transparentBackground toggle: 'lighter' (dark) vs 'source-over' (light)
 - RNG injectable: config.rng defaults to Math.random
 - No canvas ownership: engine takes (ctx, dt, w, h)
-- destroy() nulls 9 arrays
+- destroy() nulls the 9 SoA/color arrays plus the 4 batching scratch buffers, idempotently
 
 ## API
 - VERSION -- package version string constant

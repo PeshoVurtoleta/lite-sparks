@@ -41,6 +41,8 @@ export declare class SparkEngine {
     invLife: Float32Array | null;
     weight: Float32Array | null;
     state: Uint8Array | null;
+    /** Per-spark width bucket {0..3}, quantized at spawn for the batched render. */
+    wBucket: Uint8Array | null;
 
     constructor(maxParticles?: number, config?: SparkConfig);
 

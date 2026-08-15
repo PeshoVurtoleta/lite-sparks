@@ -5,6 +5,47 @@ All notable changes to `@zakkster/lite-sparks` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-08-15
+
+Throughput (roadmap session S3, the batching wave). The hot path stops paying
+per-particle for stroke state and burst stops scanning the whole pool. Particle
+positions are byte-identical to v1.1.0 -- physics is untouched; only the
+draw order within equal (color, width) groups changes, which is invisible.
+Proven zero new allocation: the counting-sort scratch is allocated once in the
+constructor and all 12 SoA/scratch `buffer.byteLength` values are pinned
+byte-identical across a 20000-op T6 window.
+
+### Added
+
+- **S-07** batched render. A per-spawn `Uint8Array wBucket` quantizes line width
+  into 4 buckets; `updateAndDraw` now counting-sorts live sparks into
+  `(colorIdx * 4 + wBucket)` bins over persistent `_order`/`_binCount`/`_binStart`
+  `Int32Array` scratch, then emits at most `colors.length * 4` (<= 16) stroke
+  passes -- one `lineWidth`/`strokeStyle` set per pass -- instead of one full
+  state change per particle. Rationale in `decisions/0006-render-batching.md`.
+
+### Changed
+
+- **S-08** spawn is now a ring cursor. `burst` advances `_head = (_head + 1) % max`
+  and overwrites oldest under pressure, replacing the from-zero `O(max)`
+  free-slot scan with `O(count)`. This makes the README's long-standing "ring
+  buffer behavior" claim actually true. Every SoA lane of an overwritten slot is
+  fully rewritten at spawn (no stale `life`/`invLife`/`state`); the S-05
+  zero-speed and S-11 `life` guards still apply on the ring path. Rationale and
+  the overwrite-oldest-vs-reuse tradeoff in `decisions/0005-spawn.md`.
+- **S-09** hot-body hoisting. `gravity`, the dt-friction `f`, `stretch`, `colors`,
+  `floorBase`, and all 9 SoA array refs are read into loop-preheader locals once
+  per frame instead of per particle. No behavior change.
+- Dropped the inaccurate `"webgl"` keyword from `package.json` -- this is a
+  Canvas2D engine (S-12 metadata hygiene).
+
+### Fixed
+
+- **S-07 / S-08 / S-09** close the three throughput findings from the roadmap:
+  stroke-state churn is now `O(buckets)` not `O(alive)`, and spawn is `O(count)`
+  not `O(max)`. `destroy()` extends to null the four new scratch arrays and stays
+  idempotent.
+
 ## [1.1.0] - 2026-08-15
 
 Compositing + physics correctness (roadmap session S2). The release that unlocks

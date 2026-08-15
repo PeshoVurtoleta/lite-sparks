@@ -329,14 +329,14 @@ Creates a spark engine with a pre-allocated SoA particle pool.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `maxParticles` | number | 5000 | Pool capacity. Ring buffer behavior. |
+| `maxParticles` | number | 5000 | Pool capacity. Fixed-size ring buffer: `burst` advances a ring cursor and overwrites the oldest spark once the pool is full (O(count) per burst). |
 | `config` | SparkConfig | see above | All options. Live-mutable after construction. |
 
 ### Methods
 
 | Method | Description |
 |---|---|
-| `.burst(x, y, count, angleMin, angleMax, speedMin, speedMax, lifeMin?, lifeMax?)` | Spawn sparks in an angular cone. Angles in radians. |
+| `.burst(x, y, count, angleMin, angleMax, speedMin, speedMax, lifeMin?, lifeMax?)` | Spawn sparks in an angular cone. Angles in radians. A ring cursor overwrites the oldest spark when the pool is full (`count` is capped to `maxParticles`); a hostile `count` (< 1, NaN, Infinity) spawns nothing. |
 | `.updateAndDraw(ctx, dt, w, h)` | Physics + render. `dt` in seconds. `h` is floor Y. |
 | `.clear()` | Kill all particles immediately. |
 | `.destroy()` | Null all typed arrays. Idempotent. |

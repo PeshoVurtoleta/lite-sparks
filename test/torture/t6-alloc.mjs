@@ -1,23 +1,28 @@
 /**
  * T6 -- the zero-alloc gate (the core).
  *
- * One scene: a full pool under sustained emission + physics + render, measured
- * with lite-gc-profiler and gated at maxMajor:0 / maxPauseMs:4 /
- * maxArrayBuffersGrowth:0. The last rule is the one that matters here: the eight
- * SoA columns (x/y/vx/vy/life/invLife/weight/state) are ArrayBuffer backing
- * stores that live OUTSIDE the V8 heap and are invisible to a heapUsed gate.
- * `runOpsGate` supplies `stabilize:'deep'` so the rule is resolvable.
+ * Scene A: a full pool under sustained emission + physics + batched render,
+ * measured with lite-gc-profiler and gated at maxMajor:0 / maxPauseMs:4 /
+ * maxArrayBuffersGrowth:0. The last rule is the one that matters here: the SoA
+ * columns AND the S-07 counting-sort scratch are ArrayBuffer backing stores that
+ * live OUTSIDE the V8 heap and are invisible to a heapUsed gate. `runOpsGate`
+ * supplies `stabilize:'deep'` so the rule is resolvable.
  *
  * A heap gate cannot substitute for a direct structural assertion either, so we
- * also pin all eight `buffer.byteLength` values across the window: nothing may
- * grow (the S-08 / batching regression tripwire).
+ * also pin all TWELVE `buffer.byteLength` values across the window: the eight SoA
+ * columns plus the four batching buffers (wBucket, _order, _binCount, _binStart).
+ * Nothing may grow -- the S-07 / S-08 regression tripwire.
  *
- * SPARKS_TORTURE_BREAK=1 injects a retained allocation into the hot body: the
- * gate must then reject the window. That is the T9 control, exercisable here.
+ * Scene B: burst(max) into a FULL pool. The S-08 ring cursor must spawn exactly
+ * `max` fresh sparks (overwrite-oldest), visiting <= 2*max slots, leaving the
+ * pool full -- the O(count) spawn bound, proven structurally.
+ *
+ * SPARKS_TORTURE_BREAK=1 injects a retained allocation into scene A's hot body:
+ * the gate must then reject the window. That is the T9 control, exercisable here.
  */
 
 import { SparkEngine } from '../../SparkEngine.js';
-import { runOpsGate, BREAK, stubCtx, check, die } from './harness.mjs';
+import { runOpsGate, BREAK, stubCtx, check, die, aliveCount } from './harness.mjs';
 
 const TAU = Math.PI * 2;
 const MAX = 2000;
@@ -29,11 +34,24 @@ const WARMUP = 2000;
 /** Retained sink for the BREAK control -- survives GC so arrayBuffers grows. */
 const leak = [];
 
+/** Snapshot the 12 backing-store byte lengths (8 SoA + 4 batching scratch). */
+function snapshot(e) {
+    return {
+        x: e.x.buffer.byteLength, y: e.y.buffer.byteLength,
+        vx: e.vx.buffer.byteLength, vy: e.vy.buffer.byteLength,
+        life: e.life.buffer.byteLength, invLife: e.invLife.buffer.byteLength,
+        weight: e.weight.buffer.byteLength, state: e.state.buffer.byteLength,
+        wBucket: e.wBucket.buffer.byteLength, order: e._order.buffer.byteLength,
+        binCount: e._binCount.buffer.byteLength, binStart: e._binStart.buffer.byteLength,
+    };
+}
+
 export function run() {
+    // ---- Scene A: full-pool sustained emission + physics + render ----------
     const engine = new SparkEngine(MAX, { rng: () => 0.5 });
 
     // Fill the pool so the hot loop runs a full-pool physics + render pass and a
-    // sustained burst into a mostly-occupied pool (the S-08 scan hot path).
+    // sustained burst into a full pool (the S-08 ring-cursor hot path).
     engine.burst(W / 2, H / 2, MAX, 0, TAU, 100, 800);
 
     const hot = (i) => {
@@ -42,29 +60,25 @@ export function run() {
         if (BREAK) leak.push(new Float64Array(64)); // control: retained growth
     };
 
-    // Pin ALL EIGHT SoA backing stores before the window.
-    const b = {
-        x: engine.x.buffer.byteLength,
-        y: engine.y.buffer.byteLength,
-        vx: engine.vx.buffer.byteLength,
-        vy: engine.vy.buffer.byteLength,
-        life: engine.life.buffer.byteLength,
-        invLife: engine.invLife.buffer.byteLength,
-        weight: engine.weight.buffer.byteLength,
-        state: engine.state.buffer.byteLength,
-    };
+    // Pin ALL TWELVE backing stores before the window.
+    const b = snapshot(engine);
 
     const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
 
-    // Structural pins no heap gate can make: every SoA column byte-identical.
-    check(engine.x.buffer.byteLength === b.x, () => 'T6: x SoA store grew ' + b.x + ' -> ' + engine.x.buffer.byteLength);
-    check(engine.y.buffer.byteLength === b.y, () => 'T6: y SoA store grew ' + b.y + ' -> ' + engine.y.buffer.byteLength);
-    check(engine.vx.buffer.byteLength === b.vx, () => 'T6: vx SoA store grew ' + b.vx + ' -> ' + engine.vx.buffer.byteLength);
-    check(engine.vy.buffer.byteLength === b.vy, () => 'T6: vy SoA store grew ' + b.vy + ' -> ' + engine.vy.buffer.byteLength);
-    check(engine.life.buffer.byteLength === b.life, () => 'T6: life SoA store grew ' + b.life + ' -> ' + engine.life.buffer.byteLength);
-    check(engine.invLife.buffer.byteLength === b.invLife, () => 'T6: invLife SoA store grew ' + b.invLife + ' -> ' + engine.invLife.buffer.byteLength);
-    check(engine.weight.buffer.byteLength === b.weight, () => 'T6: weight SoA store grew ' + b.weight + ' -> ' + engine.weight.buffer.byteLength);
-    check(engine.state.buffer.byteLength === b.state, () => 'T6: state SoA store grew ' + b.state + ' -> ' + engine.state.buffer.byteLength);
+    // Structural pins no heap gate can make: every backing store byte-identical.
+    const a = snapshot(engine);
+    check(a.x === b.x, () => 'T6: x SoA store grew ' + b.x + ' -> ' + a.x);
+    check(a.y === b.y, () => 'T6: y SoA store grew ' + b.y + ' -> ' + a.y);
+    check(a.vx === b.vx, () => 'T6: vx SoA store grew ' + b.vx + ' -> ' + a.vx);
+    check(a.vy === b.vy, () => 'T6: vy SoA store grew ' + b.vy + ' -> ' + a.vy);
+    check(a.life === b.life, () => 'T6: life SoA store grew ' + b.life + ' -> ' + a.life);
+    check(a.invLife === b.invLife, () => 'T6: invLife SoA store grew ' + b.invLife + ' -> ' + a.invLife);
+    check(a.weight === b.weight, () => 'T6: weight SoA store grew ' + b.weight + ' -> ' + a.weight);
+    check(a.state === b.state, () => 'T6: state SoA store grew ' + b.state + ' -> ' + a.state);
+    check(a.wBucket === b.wBucket, () => 'T6: wBucket store grew ' + b.wBucket + ' -> ' + a.wBucket);
+    check(a.order === b.order, () => 'T6: _order store grew ' + b.order + ' -> ' + a.order);
+    check(a.binCount === b.binCount, () => 'T6: _binCount store grew ' + b.binCount + ' -> ' + a.binCount);
+    check(a.binStart === b.binStart, () => 'T6: _binStart store grew ' + b.binStart + ' -> ' + a.binStart);
 
     if (!report.ok) {
         const g = summary.gc;
@@ -77,4 +91,22 @@ export function run() {
     // In BREAK mode the gate was SUPPOSED to reject; reaching here means the
     // control silently passed, which is itself a failure.
     if (BREAK) die('T6: SPARKS_TORTURE_BREAK injected allocations but the gate passed');
+
+    // ---- Scene B: ring cursor -- burst(max) into a FULL pool ---------------
+    // A separate engine, filled to capacity, then burst(max) again. The S-08 ring
+    // cursor must spawn exactly `max` fresh sparks (overwrite-oldest) touching
+    // <= 2*max slots (in fact exactly `max` -- one visit per spawn), leaving the
+    // pool still full. This is the O(count) spawn bound as a structural pin.
+    const ring = new SparkEngine(MAX, { rng: () => 0.5 });
+    ring.burst(W / 2, H / 2, MAX, 0, TAU, 100, 800);
+    check(aliveCount(ring) === MAX,
+        () => 'T6.B: initial fill left ' + aliveCount(ring) + ' alive != ' + MAX);
+
+    ring.burst(W / 2, H / 2, MAX, 0, TAU, 100, 800);
+    check(ring._visits === MAX,
+        () => 'T6.B: burst(max) into a full pool visited ' + ring._visits + ' slots (want exactly ' + MAX + ')');
+    check(ring._visits <= 2 * MAX,
+        () => 'T6.B: ring cursor visited ' + ring._visits + ' > ' + (2 * MAX) + ' slots -- not O(count)');
+    check(aliveCount(ring) === MAX,
+        () => 'T6.B: burst into full pool left ' + aliveCount(ring) + ' alive != ' + MAX);
 }

@@ -32,6 +32,14 @@ function aliveCount(e, max) {
     return n;
 }
 
+// S-08: the ring cursor advances BEFORE writing, so the first spark of a burst
+// lands in slot 1, not slot 0. Tests inspecting a single spawned spark locate
+// its slot rather than assuming index 0.
+function firstLive(e) {
+    for (let i = 0; i < e.max; i++) if (e.state[i] === 1) return i;
+    return -1;
+}
+
 // ---------------------------------------------------------------------------
 // S0: version sync invariant (not a pinned bug anchor -- infra requirement).
 // ---------------------------------------------------------------------------
@@ -73,14 +81,15 @@ test('S-02: fixed v1.0.2 -- burst(x,y,1.5,...) floors to spawn exactly 1', () =>
 test('S-01: fixed v1.0.2 -- updateAndDraw(ctx, NaN, w, h) is a no-op, leaves particles finite', () => {
     const e = new SparkEngine(10, { rng: () => 0.5 });
     e.burst(400, 300, 1, 0, Math.PI * 2, 100, 500);
-    const xBefore = e.x[0];
-    const lifeBefore = e.life[0];
+    const s = firstLive(e);
+    const xBefore = e.x[s];
+    const lifeBefore = e.life[s];
     e.updateAndDraw(ctx, NaN, 800, 600);
-    assert.ok(Number.isFinite(e.x[0]));    // door rejected NaN -> no poison
-    assert.ok(Number.isFinite(e.life[0]));
-    assert.equal(e.x[0], xBefore);         // no-op: last good state untouched
-    assert.equal(e.life[0], lifeBefore);
-    assert.equal(e.state[0], 1);           // still alive
+    assert.ok(Number.isFinite(e.x[s]));    // door rejected NaN -> no poison
+    assert.ok(Number.isFinite(e.life[s]));
+    assert.equal(e.x[s], xBefore);         // no-op: last good state untouched
+    assert.equal(e.life[s], lifeBefore);
+    assert.equal(e.state[s], 1);           // still alive
 });
 
 test('S-01: fixed v1.0.2 -- updateAndDraw(ctx, -1|Infinity|0, w, h) leaves every live particle finite', () => {
@@ -112,12 +121,13 @@ test('S-11: fixed v1.0.2 -- burst(...,lifeMin=0,lifeMax=0) never yields Infinity
 test('S-05: fixed v1.1.0 -- zero-speed burst falls under gravity and lands on the floor', () => {
     const e = new SparkEngine(10, { rng: () => 0.5 });
     e.burst(400, 100, 1, 0, 0, 0, 0, 5, 5); // speedMin=speedMax=0 -> vx=vy=0; S-05 seeds vy=1e-3
-    const yBefore = e.y[0];
+    const s = firstLive(e);
+    const yBefore = e.y[s];
     for (let f = 0; f < 30; f++) e.updateAndDraw(ctx, 0.1, 800, 600);
-    assert.ok(e.y[0] > yBefore);   // gravity engaged -- the spark fell, no mid-air hang
-    const floorY = 600 - e.weight[0] / 2;
-    assert.ok(Math.abs(e.y[0] - floorY) < 1); // landed on the floor
-    assert.equal(e.state[0], 1);   // still alive (life=5, 30*0.1=3.0 consumed)
+    assert.ok(e.y[s] > yBefore);   // gravity engaged -- the spark fell, no mid-air hang
+    const floorY = 600 - e.weight[s] / 2;
+    assert.ok(Math.abs(e.y[s] - floorY) < 1); // landed on the floor
+    assert.equal(e.state[s], 1);   // still alive (life=5, 30*0.1=3.0 consumed)
 });
 
 // ---------------------------------------------------------------------------
@@ -198,13 +208,15 @@ test('boundary: calls after dispose are silent no-ops, not throws', () => {
     assert.equal(e.x, null); // burst() after destroy did not resurrect arrays
 });
 
-test('boundary: pinned v1.0.1 behavior -- dispose-during-iteration throws TypeError on the next slot', () => {
-    // Re-entrant destroy() from inside a per-particle callback nulls every SoA
-    // column mid-loop; the very next array read in the same updateAndDraw pass
-    // throws because `this.life` etc. are now `null`. This is NOT caught by the
-    // engine -- current v1.0.1 has no re-entrancy guard.
+test('boundary: v1.2.0 batched render -- dispose-during-draw is now re-entrancy-safe (no throw)', () => {
+    // v1.0.1 threw a TypeError here: destroy() from inside a per-particle stroke
+    // nulled `this.life` etc. mid-loop and the next array read blew up. The S-07
+    // batched render hoists every SoA column to a loop-preheader LOCAL before the
+    // stroke phase, so a re-entrant destroy() (which nulls the `this.*` handles)
+    // cannot pull the arrays out from under the in-flight draw -- the locals keep
+    // pointing at the live buffers. The pass completes; arrays are nulled after.
     const e = new SparkEngine(N, { rng: () => 0.5 });
-    e.burst(400, 300, 5, 0, Math.PI * 2, 100, 500);
+    e.burst(400, 300, 5, 0, Math.PI * 2, 100, 500); // all 5 share one (color,width) bin
     let strokeCalls = 0;
     const disposingCtx = {
         clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {},
@@ -212,25 +224,24 @@ test('boundary: pinned v1.0.1 behavior -- dispose-during-iteration throws TypeEr
         globalAlpha: 1, globalCompositeOperation: 'source-over',
         strokeStyle: '', lineWidth: 1, lineCap: 'butt',
     };
-    assert.throws(
-        () => e.updateAndDraw(disposingCtx, 0.016, 800, 600),
-        TypeError
-    );
-    assert.equal(strokeCalls, 1);
-    assert.equal(e.x, null);
+    assert.doesNotThrow(() => e.updateAndDraw(disposingCtx, 0.016, 800, 600));
+    assert.equal(strokeCalls, 1);  // one batched pass, not one-per-particle
+    assert.equal(e.x, null);       // destroy() still took effect afterward
 });
 
 // ---------------------------------------------------------------------------
 // Re-entrant write.
 // ---------------------------------------------------------------------------
 
-test('boundary: pinned v1.0.1 behavior -- re-entrant burst() during updateAndDraw is processed same frame', () => {
-    // burst() called from inside the ctx callback writes new live particles into
-    // slots the in-flight `for` loop has not reached yet, so they get physics +
-    // a draw call in the SAME updateAndDraw pass they were spawned in (no
-    // re-entrancy guard exists in v1.0.1).
+test('boundary: v1.2.0 batched render -- re-entrant burst() spawns live but defers drawing to the next frame', () => {
+    // v1.0.1 drew re-entrant sparks in the same pass because it strolled the pool
+    // in a single interleaved loop. The S-07 render snapshots its draw set in the
+    // counting-sort SCATTER phase (phase 2), then strokes it in phase 3. A burst()
+    // fired from inside a phase-3 stroke still SPAWNS live particles (they are in
+    // the pool, alive) but they are not in the already-built `_order`, so they are
+    // drawn on the NEXT frame, not this one -- a cleaner, deterministic contract.
     const e = new SparkEngine(N, { rng: () => 0.5 });
-    e.burst(400, 300, 3, 0, Math.PI * 2, 100, 500);
+    e.burst(400, 300, 3, 0, Math.PI * 2, 100, 500); // 3 sparks, one batched bin
     let strokeCalls = 0;
     const reentrantCtx = {
         clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {},
@@ -242,8 +253,8 @@ test('boundary: pinned v1.0.1 behavior -- re-entrant burst() during updateAndDra
         strokeStyle: '', lineWidth: 1, lineCap: 'butt',
     };
     assert.doesNotThrow(() => e.updateAndDraw(reentrantCtx, 0.016, 800, 600));
-    assert.equal(aliveCount(e, N), 8);   // 3 original + 5 re-entrant
-    assert.equal(strokeCalls, 8);        // the 5 new particles were drawn this frame too
+    assert.equal(aliveCount(e, N), 8);   // 3 original + 5 re-entrant, all alive
+    assert.equal(strokeCalls, 1);        // one batched pass over the pre-burst draw set
 });
 
 // ---------------------------------------------------------------------------
@@ -378,7 +389,10 @@ test('S-03: default engine (autoClear:true) calls clearRect exactly once per upd
     const rec = recordingCtx();
     e.updateAndDraw(rec, 1 / 60, 800, 600);
     assert.equal(rec.clears, 1);
-    assert.equal(rec.strokes, 5); // sanity: it also drew the live sparks
+    // S-07 batched render: the 5 sparks (same color + width bucket at rng=0.5)
+    // collapse into ONE batched stroke pass, not five per-particle strokes.
+    assert.equal(rec.strokes, 1);
+    assert.ok(rec.strokes <= e.colors.length * 4); // never more than the bin count
 });
 
 test('S-03: autoClear:false calls clearRect ZERO times while still stroking live sparks', () => {
@@ -387,7 +401,8 @@ test('S-03: autoClear:false calls clearRect ZERO times while still stroking live
     const rec = recordingCtx();
     e.updateAndDraw(rec, 1 / 60, 800, 600);
     assert.equal(rec.clears, 0);      // never wipes the caller's prior pixels
-    assert.equal(rec.strokes, 5);     // but live sparks are still drawn over them
+    assert.equal(rec.strokes, 1);     // but live sparks are still drawn (one batched pass)
+    assert.ok(rec.strokes <= e.colors.length * 4);
 });
 
 test('S-03: autoClear:false over multiple frames never clears, each frame still strokes', () => {

@@ -8,6 +8,14 @@ const ctx = {
     strokeStyle: '', lineWidth: 1, lineCap: 'butt',
 };
 
+// S-08: the ring cursor starts at head 0 and advances BEFORE writing, so the
+// first spark of a burst lands in slot 1, not slot 0. Tests that inspect a
+// single spawned spark find its slot instead of assuming index 0.
+function firstLive(e) {
+    for (let i = 0; i < e.max; i++) if (e.state[i] === 1) return i;
+    return -1;
+}
+
 test('constructs with defaults', () => {
     const e = new SparkEngine();
     assert.equal(e.max, 5000);
@@ -36,13 +44,13 @@ test('burst respects angle range', () => {
     const e = new SparkEngine(100, { rng: () => 0.5 });
     // Straight up: angle midpoint = -PI/2
     e.burst(400, 300, 1, -Math.PI, 0, 500, 500);
-    assert.ok(e.vy[0] < 0); // upward
+    assert.ok(e.vy[firstLive(e)] < 0); // upward
 });
 
 test('invLife precomputed at spawn', () => {
     const e = new SparkEngine(100, { rng: () => 0.5 });
     e.burst(400, 300, 1, 0, Math.PI, 100, 100, 1.0, 1.0);
-    assert.ok(Math.abs(e.invLife[0] - 1.0) < 0.005);
+    assert.ok(Math.abs(e.invLife[firstLive(e)] - 1.0) < 0.005);
 });
 
 test('updateAndDraw runs without error', () => {
@@ -54,17 +62,18 @@ test('updateAndDraw runs without error', () => {
 test('floor bounce reverses vy (sign flip across the bounce frame)', () => {
     const e = new SparkEngine(100, { rng: () => 0.5, gravity: 800, restitution: 0.5 });
     e.burst(400, 590, 1, Math.PI / 2, Math.PI / 2, 100, 100); // straight down -> vy > 0
-    assert.ok(e.vy[0] > 0); // moving downward before any bounce
+    const s = firstLive(e);
+    assert.ok(e.vy[s] > 0); // moving downward before any bounce
     // Step frame by frame and catch the frame where a downward vy is reflected
     // upward -- the actual restitution sign flip, not just "y stayed below h".
     let flipped = false;
     for (let i = 0; i < 20; i++) {
-        const vyBefore = e.vy[0];
+        const vyBefore = e.vy[s];
         e.updateAndDraw(ctx, 0.05, 800, 600);
-        if (vyBefore > 0 && e.vy[0] < 0) { flipped = true; break; }
+        if (vyBefore > 0 && e.vy[s] < 0) { flipped = true; break; }
     }
     assert.ok(flipped, 'vy never flipped sign across a bounce');
-    assert.ok(e.y[0] <= 600);
+    assert.ok(e.y[s] <= 600);
 });
 
 test('sleep state: resting sparks skip physics', () => {

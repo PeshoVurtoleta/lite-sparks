@@ -2,9 +2,11 @@
  * T0 -- metamorphic laws. Properties that must hold for ANY scene.
  *
  *   1. Burst conservation. After a VALID burst (count a positive integer),
- *      `aliveCount` equals `min(count, freeSlots)` -- no orphaned or duplicate
- *      slots. This is the structural pool invariant, the particle-engine
- *      analogue of lite-bvh's free-list conservation.
+ *      `aliveCount` equals `min(count, max)` -- no orphaned or duplicate slots.
+ *      This is the structural pool invariant, the particle-engine analogue of
+ *      lite-bvh's free-list conservation. The ceiling is the POOL SIZE, not the
+ *      free count: the S-08 ring cursor is overwrite-oldest (ADR 0005), so a
+ *      burst may reuse a live slot rather than only ever filling free ones.
  *   2. Seeded determinism. Two engines fed the same seeded rng and the same
  *      burst/update script produce a byte-identical snapshot of
  *      x/y/vx/vy/life/state after N frames. (Shared-law 7.)
@@ -45,22 +47,23 @@ export function run() {
         check(aliveCount(e) === 50,
             () => 'T0.conservation: burst(50) on empty pool -> alive ' + aliveCount(e) + ' != 50 (seed=' + SEED + ')');
 
-        // Free slots now 150; a burst larger than free must fill exactly the
-        // free slots -> min(count, freeSlots).
+        // A burst larger than the pool can only ever fill the pool -> min(count,
+        // max). The ring cursor overwrites the oldest slots (S-08); the ceiling
+        // is the pool size, not the free count.
         e.burst(400, 300, 500, 0, Math.PI * 2, 100, 500);
         check(aliveCount(e) === max,
             () => 'T0.conservation: burst over-capacity -> alive ' + aliveCount(e) + ' != ' + max + ' (seed=' + SEED + ')');
 
-        // count exactly equal to free slots (0 here) adds nothing.
+        // A burst into a full pool overwrites live slots -- count is unchanged.
         e.burst(400, 300, 1, 0, Math.PI * 2, 100, 500);
         check(aliveCount(e) === max,
             () => 'T0.conservation: burst into a full pool changed count to ' + aliveCount(e) + ' (seed=' + SEED + ')');
 
-        // count == free exactly on a partially-drained pool.
+        // count == max exactly on an empty pool -> fills every slot once.
         const e2 = new SparkEngine(64, { rng: makeFloatRng(SEED) });
         e2.burst(0, 0, 64, 0, Math.PI * 2, 100, 500);
         check(aliveCount(e2) === 64,
-            () => 'T0.conservation: burst(free==count) -> alive ' + aliveCount(e2) + ' != 64 (seed=' + SEED + ')');
+            () => 'T0.conservation: burst(count==max) -> alive ' + aliveCount(e2) + ' != 64 (seed=' + SEED + ')');
     }
 
     // --- Law 2: seeded determinism ----------------------------------------
