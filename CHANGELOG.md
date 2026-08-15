@@ -5,6 +5,65 @@ All notable changes to `@zakkster/lite-sparks` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-15
+
+Compositing + physics correctness (roadmap session S2). The release that unlocks
+layering, makes ballistics frame-rate-independent, and lands debris where you
+point it. Every change is guarded and byte-identical at the defaults: at
+`dt = 1/60`, `autoClear:true`, `floorY:null`, the per-particle output is
+bit-for-bit v1.0.2. Two new per-frame hoists (`f`, `floorBase`); the per-particle
+body gains only the `floorY` read and loses the fused pre-move X-cull.
+
+### Added
+
+- **S-03** (`autoClear`, default `true`). The unconditional full-canvas
+  `ctx.clearRect(0, 0, w, h)` is now guarded by `if (this.config.autoClear)`.
+  Default `true` preserves the current wipe-every-frame behavior exactly; with
+  `autoClear:false` the engine draws over whatever is already on the canvas, so
+  pointer-following scratch sparks and fireworks/smoke layering become possible.
+  Rationale in `decisions/0003-autoclear.md`.
+- **S-10** (`floorY`, default `null`). Sparks can land on a HUD bar / table edge
+  instead of the canvas bottom. `null` means "use `h`" (null is not zero), so the
+  default is byte-identical to the hardcoded `h`. Hoisted once per frame as
+  `floorBase`; the per-spark `weight/2` offset stays in the loop.
+
+### Fixed
+
+- **S-04** (dt-independent friction). The per-frame `v *= friction` (frame-rate
+  dependent, ~28px 30-vs-120fps divergence over 1s) is replaced by a per-frame
+  hoisted factor `f = Math.pow(friction, dt * 60)`, applied `v *= f`. At
+  `dt = 1/60`, `dt*60 === 1` and `pow(0.99, 1) === 0.99` exactly, so the 60fps
+  calibration anchor is bit-preserved; other refresh rates now converge. Floor
+  `restitution`/`floorFriction` are per-bounce (event-driven) and correctly
+  frame-rate independent already -- left untouched. Rationale + the 60fps
+  byte-identity proof in `decisions/0004-dt-friction.md`.
+- **S-05** (sleep-epsilon). A zero-speed burst (`vx === vy === 0`) no longer hangs
+  in mid-air forever. At spawn (cold path), when both components are exactly `0`,
+  `vy` is seeded with `1e-3` so gravity engages and the spark falls. The hot-loop
+  sleep check stays two comparisons (`vx !== 0 || vy !== 0`), untouched.
+- **S-06** (cull margins + post-move position). The X-cull was fused with the life
+  check ABOVE the physics block, so it read the PRE-move position and clipped
+  exactly at the edge -- a velocity-stretched tail popped out before it cleared.
+  Now the top check is life-only (`life <= 0 -> state = 0`); the X-cull runs
+  AFTER the physics block on the post-move position, widened to a 200px margin
+  (`CULL_MARGIN`): a spark keeps drawing until head + tail clear the margin. No
+  Y-cull (life bounds it). Sleeping sparks skip physics, so their `x` is
+  unchanged and the post-move check is equivalent for them.
+
+### Changed
+
+- `VERSION` const and `package.json` bumped to `1.1.0`. `llms.txt` Config section
+  documents `autoClear`/`floorY`, the dt-independent friction, and the
+  `transparentBackground` semantic inversion vs lite-fireworks.
+- Torture T0 adds law 4 (S-04 dt-scaling: one `dt` step within tolerance of two
+  `dt/2` steps) and law 5 (S-03 autoClear call-count). T9 adds a control replaying
+  the pre-S-04 per-frame `*= friction` model and asserting it fails the dt-scaling
+  tolerance -- the gate bites. `test/boundary.test.js` flips the S-05 anchor to
+  the fixed falls-to-floor behavior; `test/SparkEngine.test.js` strengthens the
+  floor-bounce test to assert an actual `vy` sign flip across the bounce frame.
+- README documents `autoClear`/`floorY` and the `transparentBackground` semantic
+  inversion vs lite-fireworks (a cross-package trap).
+
 ## [1.0.2] - 2026-08-15
 
 The hostile-input doors (roadmap session S1). Two silent whole-engine
@@ -98,16 +157,9 @@ cases here (T0/T1) and fixed in the sessions noted. Nothing below is fixed in
   post-increment `++spawned >= count`. `count=0` spawns 1, `count=-5` spawns 1,
   `count=NaN`/`Infinity` fill the whole pool, `count=1.5` spawns 2. Repro:
   `burst(x,y,0,...)` -> 1 alive; `burst(x,y,NaN,...)` -> `max` alive. (T1 pins.)
-- **S-03** (S2, fix in S2): unconditional full-canvas `clearRect` every frame in
-  both modes -- sparks cannot layer over a game/scratch surface. `updateAndDraw`
-  calls `ctx.clearRect(0,0,w,h)` before the mode branch.
-- **S-04** (S2, fix in S2): frame-rate-dependent friction (`v *= friction` per
-  frame). ~28px divergence over 1s between 30fps and 120fps.
-- **S-05** (S2, fix in S2): zero-velocity sparks hang mid-air forever -- the
-  sleep check bypasses gravity when `vx===0 && vy===0`. Repro:
-  `burst(400,100,1,0,0,0,0,5,5)` -> `y` stays 100 for 30 frames.
-- **S-06** (S2, fix in S2): cull is X-only, exact-edge, one frame stale -- the
-  stretched tail pops out before it clears the edge. No leak class (life bounds).
+- **S-03**/**S-04**/**S-05**/**S-06**/**S-10** (S2): fixed in 1.1.0 -- see the
+  [1.1.0] entry above. autoClear guard, dt-independent friction, sleep-epsilon,
+  post-move cull margin, and the `floorY` config respectively.
 - **S-07** (S3, fix in S3): unbatched rendering -- per-particle
   `beginPath`/`lineWidth`/`strokeStyle`/`stroke`.
 - **S-08** (S3, fix in S3): O(max) from-zero free-slot scan in `burst` every
@@ -115,7 +167,6 @@ cases here (T0/T1) and fixed in the sessions noted. Nothing below is fixed in
 - **S-09** (S3, fix in S3): loop-invariant property loads
   (`config.gravity/friction/stretch`, `colors`, array refs) re-read per particle
   per frame.
-- **S-10** (S2, fix in S2): floor hardcoded to `h`; no `floorY` config.
 - **S-11** (S1, fix in S1): `life=0` spawn -> `invLife = 1/0 = Infinity` ->
   `colorIdx = NaN` -> `strokeStyle = undefined`. Latent (masked by first-frame
   cull today). Repro: `burst(...,lifeMin=0,lifeMax=0)` then inspect `invLife`.

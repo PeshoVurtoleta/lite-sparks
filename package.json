@@ -1,7 +1,7 @@
 {
   "name": "@zakkster/lite-sparks",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Zero-GC, SoA spark and debris engine featuring vector velocity stretching, floor restitution, thermodynamic OKLCH heat gradients, and hyper-optimized ballistic physics. Ideal for impacts, welding, grinding, fireworks trails, and high energy VFX.",
   "type": "module",
   "main": "./SparkEngine.js",

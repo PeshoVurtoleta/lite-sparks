@@ -107,4 +107,46 @@ export function run() {
             die('T9 control: two identical seeded streams diverged -- determinism is broken');
         }
     }
+
+    // Control 4 -- the S-04 dt-scaling law (T0 law 4) must be able to FAIL. Replay
+    // the PRE-S-04 free-flight physics, whose friction is the dt-independent
+    // per-frame `v *= friction` the fix removed, and confirm one `dt` step and
+    // two `dt/2` steps diverge beyond the same tolerance the T0 law enforces. If
+    // the old model stayed within tolerance the dt-scaling law would be
+    // decorative. (This mirrors the dt-door control above, which replays the
+    // un-guarded `vy += gravity * NaN` op rather than patching updateAndDraw.)
+    {
+        const DT = 1 / 30;
+        const POS_TOL = 1.0;
+        const VEL_TOL = 1.0;
+        const GRAV = 800, FRICTION = 0.99;
+
+        // Exactly the v1.0.2 free-flight loop body, but with the pre-S-04
+        // frame-rate-dependent friction: `v *= FRICTION` once per frame,
+        // independent of dt. No bounce (the T0 law flies far above any floor).
+        const oldStep = (s, dt) => {
+            s.vy += GRAV * dt;
+            s.vx *= FRICTION;
+            s.vy *= FRICTION;
+            s.x += s.vx * dt;
+            s.y += s.vy * dt;
+        };
+
+        const mk = () => ({ x: 400, y: 500, vx: 200, vy: -100 });
+        const big = mk();
+        const half = mk();
+        oldStep(big, DT);
+        oldStep(half, DT / 2);
+        oldStep(half, DT / 2);
+
+        const withinTol =
+            Math.abs(big.x - half.x) <= POS_TOL &&
+            Math.abs(big.y - half.y) <= POS_TOL &&
+            Math.abs(big.vx - half.vx) <= VEL_TOL &&
+            Math.abs(big.vy - half.vy) <= VEL_TOL;
+        if (withinTol) {
+            die('T9 control: the pre-S-04 per-frame `*= friction` model stayed within ' +
+                'the dt-scaling tolerance -- the S-04 law (T0 law 4) cannot fail');
+        }
+    }
 }

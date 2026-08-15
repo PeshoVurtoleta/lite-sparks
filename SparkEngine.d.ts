@@ -1,11 +1,14 @@
 /**
- * @zakkster/lite-sparks — TypeScript Declarations
+ * @zakkster/lite-sparks -- TypeScript Declarations
  */
 
+/** Package version string, kept in sync with package.json. */
+export declare const VERSION: string;
+
 export interface SparkConfig {
-    /** Downward acceleration in px/s². Default: 800 */
+    /** Downward acceleration in px/s^2. Default: 800 */
     gravity?: number;
-    /** Air friction per frame (0–1). Default: 0.99 */
+    /** Air friction, dt-independent (applied as pow(friction, dt*60)). Default: 0.99 */
     friction?: number;
     /** Horizontal friction applied on floor bounce. Default: 0.85 */
     floorFriction?: number;
@@ -15,7 +18,11 @@ export interface SparkConfig {
     stretch?: number;
     /** true = source-over (light bg), false = additive 'lighter' (dark bg). Default: false */
     transparentBackground?: boolean;
-    /** Heat gradient: array of OKLCH objects or CSS strings. Index 0 = coldest (dying). Default: 4-stop cherry→orange→yellow→white */
+    /** true wipes the canvas each frame; false draws over existing pixels (layer over a game/scratch surface). Default: true */
+    autoClear?: boolean;
+    /** Landing floor Y. null uses the h passed to updateAndDraw (null is not zero). Default: null */
+    floorY?: number | null;
+    /** Heat gradient: array of OKLCH objects or CSS strings. Index 0 = coldest (dying). Default: 4-stop cherry -> orange -> yellow -> white */
     heatColors?: Array<{ l: number; c: number; h: number } | string>;
     /** Random number generator () => number [0, 1). Default: Math.random */
     rng?: () => number;
@@ -41,7 +48,7 @@ export declare class SparkEngine {
      * Spawn a burst of sparks at (x, y) within an angular cone.
      * @param x         Origin X
      * @param y         Origin Y
-     * @param count     Number of sparks to spawn
+     * @param count     Number of sparks to spawn (< 1, NaN, or Infinity spawn 0; floored to an integer)
      * @param angleMin  Emission cone start (radians)
      * @param angleMax  Emission cone end (radians)
      * @param speedMin  Minimum launch speed (px/s)
@@ -58,10 +65,11 @@ export declare class SparkEngine {
 
     /**
      * Update physics and render all particles. Call once per frame.
+     * A non-finite or non-positive dt is a silent no-op frame (fail closed).
      * @param ctx Canvas 2D context
      * @param dt  Delta time in seconds
      * @param w   Logical canvas width (CSS pixels)
-     * @param h   Logical canvas height — also used as floor Y
+     * @param h   Logical canvas height -- default floor Y when config.floorY is null
      */
     updateAndDraw(ctx: CanvasRenderingContext2D, dt: number, w: number, h: number): void;
 

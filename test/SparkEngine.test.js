@@ -51,12 +51,19 @@ test('updateAndDraw runs without error', () => {
     assert.doesNotThrow(() => e.updateAndDraw(ctx, 0.016, 800, 600));
 });
 
-test('floor bounce reverses vy', () => {
+test('floor bounce reverses vy (sign flip across the bounce frame)', () => {
     const e = new SparkEngine(100, { rng: () => 0.5, gravity: 800, restitution: 0.5 });
-    e.burst(400, 590, 1, Math.PI / 2, Math.PI / 2, 100, 100); // straight down
-    // Run several frames to hit floor
-    for (let i = 0; i < 10; i++) e.updateAndDraw(ctx, 0.05, 800, 600);
-    // Spark should have bounced (vy negative or zero after settling)
+    e.burst(400, 590, 1, Math.PI / 2, Math.PI / 2, 100, 100); // straight down -> vy > 0
+    assert.ok(e.vy[0] > 0); // moving downward before any bounce
+    // Step frame by frame and catch the frame where a downward vy is reflected
+    // upward -- the actual restitution sign flip, not just "y stayed below h".
+    let flipped = false;
+    for (let i = 0; i < 20; i++) {
+        const vyBefore = e.vy[0];
+        e.updateAndDraw(ctx, 0.05, 800, 600);
+        if (vyBefore > 0 && e.vy[0] < 0) { flipped = true; break; }
+    }
+    assert.ok(flipped, 'vy never flipped sign across a bounce');
     assert.ok(e.y[0] <= 600);
 });
 

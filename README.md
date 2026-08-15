@@ -12,7 +12,7 @@
 
 Zero-GC SoA spark and debris engine. Velocity stretching, floor bounce physics, thermodynamic OKLCH heat gradient. One dependency. 149 lines.
 
-**[→ Live Interactive Playground](https://cdpn.io/pen/debug/LEReGXg)**
+**[-> Live Interactive Playground](https://cdpn.io/pen/debug/LEReGXg)**
 
 ## Why lite-sparks?
 
@@ -53,7 +53,7 @@ function loop(time) {
     requestAnimationFrame(loop);
 }
 
-// Burst: 50 sparks, upward cone, 200–800 px/s
+// Burst: 50 sparks, upward cone, 200-800 px/s
 canvas.addEventListener('click', (e) => {
     sparks.burst(e.clientX, e.clientY, 50, -Math.PI, 0, 200, 800);
 });
@@ -83,8 +83,8 @@ The color index uses a precomputed `invLife[]` multiplier to avoid division in t
 Each spark renders as a line from its current position to a tail point computed from velocity:
 
 ```
-tailX = x - vx × stretch
-tailY = y - vy × stretch
+tailX = x - vx * stretch
+tailY = y - vy * stretch
 ```
 
 Fast sparks draw long lines. Slow sparks draw dots. The `stretch` config controls tail length. Higher stretch = longer comet trails.
@@ -98,11 +98,11 @@ vy *= -restitution    (reverse + energy loss)
 vx *= floorFriction   (horizontal slowdown on contact)
 ```
 
-When bounce velocity drops below 20 px/s, the spark stops bouncing and rests. When both axes drop below threshold, the spark enters **sleep state** — physics are completely bypassed, saving CPU for particles that have settled.
+When bounce velocity drops below 20 px/s, the spark stops bouncing and rests. When both axes drop below threshold, the spark enters **sleep state** -- physics are completely bypassed, saving CPU for particles that have settled.
 
 ### Weight
 
-Each spark gets a random `weight` (1.0–4.0) that controls `lineWidth`. Heavier sparks render as thicker strokes. Weight also offsets the floor position slightly so sparks don't all pile at the exact same Y.
+Each spark gets a random `weight` (1.0-4.0) that controls `lineWidth`. Heavier sparks render as thicker strokes. Weight also offsets the floor position slightly so sparks don't all pile at the exact same Y.
 
 ---
 
@@ -112,20 +112,35 @@ All config values are live-mutable between frames.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `gravity` | number | 800 | Downward acceleration in px/s². Sparks are heavy — higher than fireworks. |
-| `friction` | number | 0.99 | Air friction per frame (0–1). 0.99 = very light drag for fast sparks. |
+| `gravity` | number | 800 | Downward acceleration in px/s^2. Sparks are heavy -- higher than fireworks. |
+| `friction` | number | 0.99 | Air friction per frame (0-1). 0.99 = very light drag for fast sparks. |
 | `floorFriction` | number | 0.85 | Horizontal friction on floor bounce. Lower = sparks skid further. |
 | `restitution` | number | 0.4 | Bounce energy retention (0 = no bounce, 1 = perfect elastic). |
 | `stretch` | number | 0.04 | Velocity tail multiplier. Higher = longer comet trails. |
-| `transparentBackground` | boolean | false | `false` = additive blending (dark bg). `true` = source-over (light bg). |
+| `transparentBackground` | boolean | false | `false` = additive blending (dark bg). `true` = source-over (light bg). Selects the blend mode, NOT a clear policy -- see the trap note below. |
+| `autoClear` | boolean | true | `true` wipes the canvas each frame (default, byte-identical to pre-1.1.0). `false` draws over existing pixels so sparks layer over a game / scratch surface -- you own the clear. |
+| `floorY` | number \| null | null | Y of the landing floor. `null` -> use `h` (the canvas height). Set a pixel value to land sparks on a HUD bar / table edge. The per-spark `weight/2` offset still applies. |
 | `heatColors` | Array | 4 OKLCH stops | Heat gradient. Index 0 = coldest (dying), last = hottest (born). Pre-parsed at construction. |
 | `rng` | Function | `Math.random` | RNG function `() => number` in [0, 1). Inject seeded RNG for determinism. |
 
+> **Cross-package trap -- `transparentBackground` is INVERTED vs `lite-fireworks`.**
+> In lite-sparks, `transparentBackground` picks the compositing operation:
+> `false` -> `'lighter'` (additive, for dark backgrounds), `true` -> `'source-over'`
+> (for light backgrounds). In `lite-fireworks` a same-named option means the
+> opposite -- whether the background is wiped / see-through. Do NOT assume they
+> match when moving between the two packages. To layer sparks over an existing
+> frame in lite-sparks, use `autoClear: false` (above), not `transparentBackground`.
+> Renaming this option is a breaking change parked to 2.0.
+
+> **Frame-rate-independent friction (1.1.0).** `friction` is applied as
+> `pow(friction, dt * 60)` per frame, so drag no longer changes with refresh rate.
+> At 60fps (`dt = 1/60`) the output is byte-identical to earlier versions.
+
 ---
 
-## Canvas Setup (No Built-in Resize — By Design)
+## Canvas Setup (No Built-in Resize -- By Design)
 
-lite-sparks is a pure engine — it doesn't own the canvas. Here's the recommended setup:
+lite-sparks is a pure engine -- it doesn't own the canvas. Here's the recommended setup:
 
 ```javascript
 import { SparkEngine } from '@zakkster/lite-sparks';
@@ -194,7 +209,7 @@ sparks.burst(400, 300, 50, -Math.PI, 0, 200, 800); // exact same sparks
 ## Recipes
 
 <details>
-<summary><strong>🔥 Welding Arc (Continuous Stream)</strong></summary>
+<summary><strong>Welding Arc (Continuous Stream)</strong></summary>
 
 Hold mouse down for a constant upward spray of sparks, like a welding torch or angle grinder.
 
@@ -220,9 +235,9 @@ function loop(time) {
 </details>
 
 <details>
-<summary><strong>💥 Impact Explosion (Single Burst)</strong></summary>
+<summary><strong>Impact Explosion (Single Burst)</strong></summary>
 
-One massive radial burst on click — all angles, high speed, short life.
+One massive radial burst on click -- all angles, high speed, short life.
 
 ```javascript
 const sparks = new SparkEngine(8000, { gravity: 1200, restitution: 0.3, stretch: 0.03 });
@@ -235,7 +250,7 @@ canvas.addEventListener('click', (e) => {
 </details>
 
 <details>
-<summary><strong>🫠 Molten Drip (Slow Heavy Slag)</strong></summary>
+<summary><strong>Molten Drip (Slow Heavy Slag)</strong></summary>
 
 Slow, heavy particles dripping downward with long life and low bounce.
 
@@ -247,7 +262,7 @@ const sparks = new SparkEngine(3000, {
     friction: 0.995,
 });
 
-// Drip downward only (0 to π = below horizon)
+// Drip downward only (0 to pi = below horizon)
 setInterval(() => {
     sparks.burst(w / 2, 100, 5, 0, Math.PI, 10, 150, 1.0, 3.0);
 }, 100);
@@ -256,7 +271,7 @@ setInterval(() => {
 </details>
 
 <details>
-<summary><strong>🎨 Custom Heat Gradient</strong></summary>
+<summary><strong>Custom Heat Gradient</strong></summary>
 
 Replace the default gradient with brand colors or fantasy metals.
 
@@ -274,7 +289,7 @@ const sparks = new SparkEngine(5000, {
 </details>
 
 <details>
-<summary><strong>☀️ Light Mode (Source-Over Blending)</strong></summary>
+<summary><strong>Light Mode (Source-Over Blending)</strong></summary>
 
 On light backgrounds, disable additive blending so sparks render with proper opacity.
 
@@ -292,9 +307,9 @@ modeToggle.onchange = () => {
 </details>
 
 <details>
-<summary><strong>🎛️ Live Config Panel</strong></summary>
+<summary><strong>Live Config Panel</strong></summary>
 
-All config values are live-mutable — perfect for debug panels.
+All config values are live-mutable -- perfect for debug panels.
 
 ```javascript
 gravitySlider.oninput = () => sparks.config.gravity = +gravitySlider.value;
@@ -329,11 +344,11 @@ Creates a spark engine with a pre-allocated SoA particle pool.
 ### burst() Angle Guide
 
 ```
-          -π/2 (straight up)
-            │
-   -π ──────┼────── 0 (right)
-   (left)   │
-          π/2 (straight down)
+          -pi/2 (straight up)
+            |
+   -pi -----+----- 0 (right)
+   (left)   |
+          pi/2 (straight down)
 ```
 
 Common cones:

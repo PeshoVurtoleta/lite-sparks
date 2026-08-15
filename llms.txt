@@ -2,39 +2,47 @@
 
 > Zero-GC SoA spark and debris engine. Velocity stretching, floor bounce, thermodynamic OKLCH heat gradient. One dependency.
 
+Version: 1.1.0
+
 ## Install
 npm i @zakkster/lite-sparks
 
 ## Dependencies
-@zakkster/lite-color (OKLCH → CSS string conversion)
+@zakkster/lite-color (OKLCH -> CSS string conversion)
 
 ## Import
 import { SparkEngine } from '@zakkster/lite-sparks';
 
 ## Key Facts
 - SoA Float32Arrays: x, y, vx, vy, life, invLife, weight + Uint8Array state
-- invLife[] precomputed per-spawn — avoids division in render loop
+- invLife[] precomputed per-spawn -- avoids division in render loop
 - Sleep state: physics skipped when vx=0 && vy=0 (resting sparks on floor)
 - Floor restitution: bounce with energy loss, velocity threshold kill
 - Vector velocity stretching: each spark is a line from (x,y) to (x-vx*stretch, y-vy*stretch)
-- Heat gradient: 4-stop thermodynamic [cherry red → orange → yellow → white-hot]
-- Color index from remaining life ratio — sparks cool as they die
-- Pre-parsed OKLCH colors in constructor — zero allocation in updateAndDraw
+- Heat gradient: 4-stop thermodynamic [cherry red -> orange -> yellow -> white-hot]
+- Color index from remaining life ratio -- sparks cool as they die
+- Pre-parsed OKLCH colors in constructor -- zero allocation in updateAndDraw
 - transparentBackground toggle: 'lighter' (dark) vs 'source-over' (light)
 - RNG injectable: config.rng defaults to Math.random
 - No canvas ownership: engine takes (ctx, dt, w, h)
 - destroy() nulls 9 arrays
 
 ## API
+- VERSION -- package version string constant
 - new SparkEngine(maxParticles?, config?)
 - .burst(x, y, count, angleMin, angleMax, speedMin, speedMax, lifeMin?, lifeMax?)
-- .updateAndDraw(ctx, dt, w, h) — physics + render, call once per frame
-- .clear() — kill all particles
-- .destroy() — release all arrays
+- .updateAndDraw(ctx, dt, w, h) -- physics + render, call once per frame
+- .clear() -- kill all particles
+- .destroy() -- release all arrays
 
 ## Config
 gravity (800), friction (0.99), floorFriction (0.85), restitution (0.4),
-stretch (0.04), transparentBackground (false), heatColors (4 OKLCH), rng (Math.random)
+stretch (0.04), transparentBackground (false), autoClear (true), floorY (null->h),
+heatColors (4 OKLCH), rng (Math.random)
+- friction is dt-independent: applied as pow(friction, dt*60), 60fps byte-identical
+- autoClear:false draws over existing pixels (layer over a game/scratch surface)
+- floorY null means use h; set it to land sparks on a HUD bar / table edge
+- transparentBackground semantics are INVERTED vs lite-fireworks (see README)
 
 ## Usage
 const sparks = new SparkEngine(5000);

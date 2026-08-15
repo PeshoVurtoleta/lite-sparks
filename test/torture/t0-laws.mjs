@@ -11,9 +11,15 @@
  *   3. S-01 quarantine (fixed v1.0.2). A poison-dt frame is a no-op: 10k good
  *      frames + one NaN-dt frame + 10k more produce a snapshot byte-identical to
  *      a never-poisoned run. One bad frame cannot perturb the engine at all.
+ *   4. S-04 dt-scaling (fixed v1.1.0). One `dt` step lands within tolerance of
+ *      two `dt/2` steps on x/y/vx/vy for a spark in free flight -- the frame-rate
+ *      independence the `pow(friction, dt*60)` factor buys. Pre-S-04 (`v *=
+ *      friction` per frame) this diverged; the T9 control proves the law can fail.
+ *   5. S-03 autoClear (added v1.1.0). Default true calls `clearRect` once per
+ *      frame; `autoClear:false` never does, so sparks layer over prior pixels.
  *
  * Laws 1-2 already held on v1.0.1 for VALID input; law 3 is the executable form
- * of the S-01 door closing this session.
+ * of the S-01 door closing in S1; laws 4-5 pin the S2 compositing + physics work.
  */
 
 import { SparkEngine } from '../../SparkEngine.js';
@@ -114,5 +120,70 @@ export function run() {
                   Object.is(clean.life[i], poisoned.life[i]),
                 () => 'T0.quarantine: column[' + i + '] diverged after a poison frame (S-01, seed=' + SEED + ')');
         }
+    }
+
+    // --- Law 4: S-04 dt-scaling ------------------------------------------
+    // One `dt` step vs two `dt/2` steps must land within tolerance for a spark
+    // in free flight (friction + gravity, no bounce -- a tall canvas keeps the
+    // floor out of reach). With the pre-S-04 per-frame `v *= friction` this
+    // diverged (the T9 control replays it); with `pow(friction, dt*60)` the
+    // friction retention is identical across the two schedules and only the
+    // Euler discretization of gravity remains, which is sub-pixel here.
+    {
+        const DT = 1 / 30;
+        const POS_TOL = 1.0;   // px
+        const VEL_TOL = 1.0;   // px/s
+        const W = 800, H = 100000; // H huge so gravity never reaches the floor
+
+        const seed = (e) => {
+            e.state[0] = 1;
+            e.x[0] = 400; e.y[0] = 500;
+            e.vx[0] = 200; e.vy[0] = -100; // moving up-right, away from the floor
+            e.life[0] = 100; e.invLife[0] = 1 / 100; e.weight[0] = 2;
+        };
+
+        const big = new SparkEngine(4, { rng: () => 0.5 });
+        const half = new SparkEngine(4, { rng: () => 0.5 });
+        seed(big); seed(half);
+
+        big.updateAndDraw(stubCtx, DT, W, H);
+        half.updateAndDraw(stubCtx, DT / 2, W, H);
+        half.updateAndDraw(stubCtx, DT / 2, W, H);
+
+        check(Math.abs(big.x[0] - half.x[0]) <= POS_TOL,
+            () => 'T0.dtScaling: x diverged ' + Math.abs(big.x[0] - half.x[0]) + ' > ' + POS_TOL);
+        check(Math.abs(big.y[0] - half.y[0]) <= POS_TOL,
+            () => 'T0.dtScaling: y diverged ' + Math.abs(big.y[0] - half.y[0]) + ' > ' + POS_TOL);
+        check(Math.abs(big.vx[0] - half.vx[0]) <= VEL_TOL,
+            () => 'T0.dtScaling: vx diverged ' + Math.abs(big.vx[0] - half.vx[0]) + ' > ' + VEL_TOL);
+        check(Math.abs(big.vy[0] - half.vy[0]) <= VEL_TOL,
+            () => 'T0.dtScaling: vy diverged ' + Math.abs(big.vy[0] - half.vy[0]) + ' > ' + VEL_TOL);
+    }
+
+    // --- Law 5: S-03 autoClear -------------------------------------------
+    // A recording ctx counts clearRect calls. Default autoClear true clears once
+    // per frame; autoClear:false must never clear, so a caller's pre-drawn pixels
+    // survive between engine strokes. (One-shot assertion, not a measured loop --
+    // allocating the recording ctx here is fine; the gate measures T6, not T0.)
+    {
+        let clears = 0;
+        const recCtx = {
+            clearRect() { clears++; }, beginPath() {}, moveTo() {}, lineTo() {},
+            stroke() {}, strokeStyle: '', lineWidth: 1, lineCap: 'butt',
+            globalCompositeOperation: 'source-over',
+        };
+
+        const on = new SparkEngine(8, { rng: makeFloatRng(SEED) }); // autoClear default true
+        on.burst(400, 300, 4, 0, Math.PI * 2, 100, 500);
+        on.updateAndDraw(recCtx, 1 / 60, 800, 600);
+        check(clears === 1,
+            () => 'T0.autoClear: default did not call clearRect exactly once (got ' + clears + ')');
+
+        clears = 0;
+        const off = new SparkEngine(8, { rng: makeFloatRng(SEED), autoClear: false });
+        off.burst(400, 300, 4, 0, Math.PI * 2, 100, 500);
+        off.updateAndDraw(recCtx, 1 / 60, 800, 600);
+        check(clears === 0,
+            () => 'T0.autoClear: autoClear:false still called clearRect (' + clears + ')');
     }
 }
