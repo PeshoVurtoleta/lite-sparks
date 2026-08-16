@@ -42,6 +42,18 @@ const WIND_HASH = 3242857792;
 const GUST_HASH = 555882219;
 const TURB_HASH = 1328898878;
 
+// --- S-14 containment fingerprints (committed, default seed) ----------------
+// WALL/CEIL pin the exact wall-reflected + ceiling-contained trajectories; the
+// vortex pair pins the radial (attract) and tangential (swirl) fields. Each is a
+// distinct scene through the same seeded emitter; none may equal AERO_OFF (that
+// would mean the branch did nothing). WALL config: wallLeft 200 / wallRight 600.
+// CEIL config: ceiling 450 (the burst rises ~110px from y=500, so it engages).
+// VORTEX/SWIRL config: center (400, 500) -- the burst origin (ADR 0009/0010).
+const WALL_HASH = 3228719645;
+const CEIL_HASH = 2199078978;
+const VORTEX_HASH = 359116824;
+const SWIRL_HASH = 3915575544;
+
 /** A deterministic float-in-[0,1) source from the seeded xorshift32. */
 function makeFloatRng(seed) {
     const prng = makePrng(seed);
@@ -366,6 +378,193 @@ export function run() {
                 check(Object.is(ref[k], s2[k]),
                     () => 'T0.turb: rerun ' + r + ' diverged at channel ' + k +
                           ' -- turbulence is not deterministic');
+            }
+        }
+    }
+
+    // --- Law 10: S-14 walls -- committed hash + contain/reflect witness -----
+    // Walls are a position clamp with velocity reflection inside the moving gate.
+    // The fingerprint pins the exact wall-reflected trajectory. The witness is
+    // the load-bearing contrast: leftward sparks that WITHOUT a wall drift off the
+    // left edge and X-cull to 0 alive are, WITH wallLeft, contained (8/8 alive,
+    // x >= wallLeft) and their vx sign flipped -- the "aliveCount 8/8 where cull
+    // left 0" property (ADR 0009).
+    {
+        const wall = aeroScene({ wallLeft: 200, wallRight: 600 });
+        if (SEED === 0x9e3779b9) {
+            check(wall === WALL_HASH,
+                () => 'T0.wall: fingerprint moved -- got ' + wall + ' want ' + WALL_HASH);
+        }
+        check(wall !== AERO_OFF_HASH,
+            () => 'T0.wall: walls produced the aero-off fingerprint -- the wall clamp did nothing');
+
+        // 8 sparks driven hard left. friction 1 / gravity 0 isolate the drift.
+        const seed8Left = (e) => {
+            for (let i = 0; i < 8; i++) {
+                e.state[i] = 1; e.x[i] = 400; e.y[i] = 500; e.vx[i] = -500; e.vy[i] = 1e-3;
+                e.life[i] = 100; e.invLife[i] = 1 / 100; e.weight[i] = 2;
+            }
+        };
+        // Without a wall: drift left, X-cull past cullMin (-200) -> pool drains to 0.
+        const noWall = new SparkEngine(8, { rng: () => 0.5, friction: 1, gravity: 0 });
+        seed8Left(noWall);
+        for (let f = 0; f < 90; f++) noWall.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
+        check(aliveCount(noWall) === 0,
+            () => 'T0.wall: without a wall the leftbound sparks did NOT X-cull (alive ' +
+                  aliveCount(noWall) + ' != 0) -- the contrast is vacuous');
+
+        // With wallLeft: contained and reflected -- 8/8 alive, x >= wall, vx flipped.
+        const WL = 100;
+        const withWall = new SparkEngine(8, { rng: () => 0.5, friction: 1, gravity: 0, wallLeft: WL });
+        seed8Left(withWall);
+        let minX = Infinity, flipped = false;
+        for (let f = 0; f < 60; f++) {
+            withWall.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
+            for (let i = 0; i < 8; i++) {
+                if (withWall.state[i] === 1 && withWall.x[i] < minX) minX = withWall.x[i];
+                if (withWall.vx[i] > 0) flipped = true;
+            }
+        }
+        check(aliveCount(withWall) === 8,
+            () => 'T0.wall: wallLeft did not keep all 8 sparks alive (alive ' + aliveCount(withWall) + '/8)');
+        check(minX >= WL - 1e-3,
+            () => 'T0.wall: a spark escaped past wallLeft -- min x ' + minX + ' < ' + WL);
+        check(flipped,
+            () => 'T0.wall: no spark had its vx reflected to +x at the wall');
+    }
+
+    // --- Law 11: S-14 ceiling -- committed hash + contain/reflect witness ---
+    // The ceiling reflects vy and contains y from above, inside the moving gate.
+    // The fingerprint pins the exact contained trajectory. Witness: fast upward
+    // sparks are held at y >= ceiling (8/8 alive), with vy reflected downward;
+    // WITHOUT the ceiling the same sparks escape above the line (min y < ceiling),
+    // proving the clamp is load-bearing (ADR 0009).
+    {
+        const ceil = aeroScene({ ceiling: 450 });
+        if (SEED === 0x9e3779b9) {
+            check(ceil === CEIL_HASH,
+                () => 'T0.ceil: fingerprint moved -- got ' + ceil + ' want ' + CEIL_HASH);
+        }
+        check(ceil !== AERO_OFF_HASH,
+            () => 'T0.ceil: ceiling produced the aero-off fingerprint -- the ceiling clamp did nothing');
+
+        const seed8Up = (e) => {
+            for (let i = 0; i < 8; i++) {
+                e.state[i] = 1; e.x[i] = 400; e.y[i] = 500; e.vx[i] = 0; e.vy[i] = -800;
+                e.life[i] = 100; e.invLife[i] = 1 / 100; e.weight[i] = 2;
+            }
+        };
+        const CEIL = 0;
+        // Without a ceiling: the sparks fly up past y=0 (escape above the line).
+        const noCeil = new SparkEngine(8, { rng: () => 0.5, friction: 1, gravity: 0 });
+        seed8Up(noCeil);
+        let escMinY = Infinity;
+        for (let f = 0; f < 60; f++) {
+            noCeil.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
+            for (let i = 0; i < 8; i++) if (noCeil.state[i] === 1 && noCeil.y[i] < escMinY) escMinY = noCeil.y[i];
+        }
+        check(escMinY < CEIL,
+            () => 'T0.ceil: without a ceiling the upward sparks stayed at y ' + escMinY +
+                  ' >= ' + CEIL + ' -- the contrast is vacuous');
+
+        // With the ceiling: contained (y >= ceiling), 8/8 alive, vy reflected down.
+        const withCeil = new SparkEngine(8, { rng: () => 0.5, friction: 1, gravity: 0, ceiling: CEIL });
+        seed8Up(withCeil);
+        let minY = Infinity, flippedDown = false;
+        for (let f = 0; f < 60; f++) {
+            withCeil.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
+            for (let i = 0; i < 8; i++) {
+                if (withCeil.state[i] === 1 && withCeil.y[i] < minY) minY = withCeil.y[i];
+                if (withCeil.vy[i] > 0) flippedDown = true;
+            }
+        }
+        check(aliveCount(withCeil) === 8,
+            () => 'T0.ceil: ceiling did not keep all 8 sparks alive (alive ' + aliveCount(withCeil) + '/8)');
+        check(minY >= CEIL - 1e-3,
+            () => 'T0.ceil: a spark escaped above the ceiling -- min y ' + minY + ' < ' + CEIL);
+        check(flippedDown,
+            () => 'T0.ceil: no spark had its vy reflected to +y at the ceiling');
+    }
+
+    // --- Law 12: S-14 vortex attract -- committed hash + pull witness -------
+    // attract pulls each moving spark radially toward (attractX, attractY). The
+    // fingerprint pins the field. Witness: attract=+2000 cuts a spark's distance
+    // to the center by > 50% (it passes through), and a HOSTILE attract=-1e9 stays
+    // finite because each axis is clamped to +/-VORTEX_MAX_ACCEL (ADR 0010).
+    {
+        const vortex = aeroScene({ attract: 2000, attractX: 400, attractY: 500 });
+        if (SEED === 0x9e3779b9) {
+            check(vortex === VORTEX_HASH,
+                () => 'T0.vortex: fingerprint moved -- got ' + vortex + ' want ' + VORTEX_HASH);
+        }
+        check(vortex !== AERO_OFF_HASH,
+            () => 'T0.vortex: attract produced the aero-off fingerprint -- the vortex term did nothing');
+
+        // A single spark 300px right of the center is pulled in. friction 1 /
+        // gravity 0 isolate the radial pull; track the MIN distance over the run.
+        const CX = 400, CY = 500, D0 = 300;
+        const e = new SparkEngine(4, { rng: () => 0.5, friction: 1, gravity: 0, attract: 2000, attractX: CX, attractY: CY });
+        e.state[0] = 1; e.x[0] = CX + D0; e.y[0] = CY; e.vx[0] = 0; e.vy[0] = 1e-3;
+        e.life[0] = 100; e.invLife[0] = 1 / 100; e.weight[0] = 2;
+        let minD = Infinity;
+        for (let f = 0; f < 60; f++) {
+            e.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
+            const d = Math.hypot(e.x[0] - CX, e.y[0] - CY);
+            if (d < minD) minD = d;
+        }
+        check(minD < 0.5 * D0,
+            () => 'T0.vortex: attract=+2000 did not cut distance by > 50% -- min dist ' +
+                  minD.toFixed(2) + ' >= ' + (0.5 * D0));
+
+        // Hostile attract: -1e9 repulsion. The per-axis clamp bounds |a| at 4000,
+        // so velocity grows at most 4000*dt per frame and the pool stays finite.
+        const hostile = new SparkEngine(4, { rng: () => 0.5, friction: 1, gravity: 0, attract: -1e9, attractX: CX, attractY: CY });
+        hostile.state[0] = 1; hostile.x[0] = CX + D0; hostile.y[0] = CY; hostile.vx[0] = 0; hostile.vy[0] = 1e-3;
+        hostile.life[0] = 100; hostile.invLife[0] = 1 / 100; hostile.weight[0] = 2;
+        for (let f = 0; f < 60; f++) hostile.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
+        check(aliveFinite(hostile),
+            () => 'T0.vortex: a hostile attract=-1e9 went non-finite -- the VORTEX_MAX_ACCEL clamp failed');
+    }
+
+    // --- Law 13: S-14 vortex swirl -- committed hash + tangential witness ---
+    // swirl adds a push perpendicular to the radius: a spark on the +x side of the
+    // center is nudged in y, not toward the center. The fingerprint pins the field.
+    // Witness: a spark 300px right of the center moves off the x-axis (its y leaves
+    // the center line) while attract=0 keeps it from collapsing inward, and the
+    // run is bit-deterministic (no rng in the vortex path) (ADR 0010).
+    {
+        const swirl = aeroScene({ swirl: 2000, attractX: 400, attractY: 500 });
+        if (SEED === 0x9e3779b9) {
+            check(swirl === SWIRL_HASH,
+                () => 'T0.swirl: fingerprint moved -- got ' + swirl + ' want ' + SWIRL_HASH);
+        }
+        check(swirl !== AERO_OFF_HASH,
+            () => 'T0.swirl: swirl produced the aero-off fingerprint -- the swirl term did nothing');
+
+        const CX = 400, CY = 500, D0 = 300;
+        const mk = () => {
+            const e = new SparkEngine(4, { rng: () => 0.5, friction: 1, gravity: 0, swirl: 2000, attractX: CX, attractY: CY });
+            e.state[0] = 1; e.x[0] = CX + D0; e.y[0] = CY; e.vx[0] = 0; e.vy[0] = 1e-3;
+            e.life[0] = 100; e.invLife[0] = 1 / 100; e.weight[0] = 2;
+            return e;
+        };
+        const e = mk();
+        for (let f = 0; f < 30; f++) e.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
+        check(Math.abs(e.y[0] - CY) > 1,
+            () => 'T0.swirl: the spark did not move tangentially (|y - center| ' +
+                  Math.abs(e.y[0] - CY).toFixed(3) + ' <= 1)');
+        check(Math.hypot(e.x[0] - CX, e.y[0] - CY) > 1,
+            () => 'T0.swirl: swirl collapsed the spark onto the center (attract should be 0)');
+
+        // Bit-determinism across 3 reruns (no rng in the swirl path).
+        const ref = [e.x[0], e.y[0], e.vx[0], e.vy[0]];
+        for (let r = 0; r < 2; r++) {
+            const e2 = mk();
+            for (let f = 0; f < 30; f++) e2.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
+            const s2 = [e2.x[0], e2.y[0], e2.vx[0], e2.vy[0]];
+            for (let k = 0; k < ref.length; k++) {
+                check(Object.is(ref[k], s2[k]),
+                    () => 'T0.swirl: rerun ' + r + ' diverged at channel ' + k + ' -- swirl is not deterministic');
             }
         }
     }

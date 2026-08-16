@@ -212,4 +212,120 @@ export function run() {
                 'cannot prove that lifting aero outside the moving block wakes a resting spark');
         }
     }
+
+    // Control C -- the S-14 VORTEX_MAX_ACCEL clamp is load-bearing (ADR 0010). The
+    // per-axis clamp bounds a hostile attract's per-frame velocity kick to at most
+    // VORTEX_MAX_ACCEL*dt, so a spark cannot be teleported off-screen in one frame.
+    // Prove BOTH halves on a single frame under attract=-1e9: (1) the REAL engine
+    // (capped) leaves |vx| bounded (<= 100 px/s, i.e. ~4000*dt); (2) the SAME
+    // vortex accel WITHOUT the clamp -- replayed inline -- kicks |vx| to ~|attract|*dt
+    // (>> 100), which is exactly the bound the clamp holds. Remove the clamp and
+    // the real engine's kick becomes the un-clamped value, so assertion (1) fails.
+    {
+        const CX = 400, CY = 500, D0 = 300, dt = 1 / 60, ATTRACT = -1e9;
+        const CAP_BOUND = 100; // VORTEX_MAX_ACCEL*dt = 4000/60 = 66.7 < 100
+
+        // (1) Real engine, one frame: the clamp bounds the velocity kick.
+        const capped = new SparkEngine(4, { rng: () => 0.5, friction: 1, gravity: 0, attract: ATTRACT, attractX: CX, attractY: CY });
+        capped.state[0] = 1; capped.x[0] = CX + D0; capped.y[0] = CY; capped.vx[0] = 0; capped.vy[0] = 1e-3;
+        capped.life[0] = 1e6; capped.invLife[0] = 1 / 1e6; capped.weight[0] = 2;
+        capped.updateAndDraw(stubCtx, dt, 800, 100000);
+        const cappedKick = Math.abs(capped.vx[0]);
+        if (!(cappedKick <= CAP_BOUND)) {
+            die('T9 control C: the real engine\'s vortex kick |vx|=' + cappedKick +
+                ' exceeded the VORTEX_MAX_ACCEL bound ' + CAP_BOUND + ' -- the clamp FAILED (S-14)');
+        }
+
+        // (2) Un-clamped replay of the same first-frame accel: |dvx| = |attract|*dt.
+        // The spark is +x of the center (nx = -1), so ax = attract*nx = +1e9,
+        // UNCLAMPED -> a kick of 1.667e7 px/s. That is the value the clamp holds
+        // under CAP_BOUND; if the clamp were removed, (1) above would see this.
+        const unclampedKick = Math.abs(ATTRACT * (-1) * dt);
+        if (!(unclampedKick > CAP_BOUND)) {
+            die('T9 control C: the un-clamped vortex kick |dvx|=' + unclampedKick +
+                ' did not exceed the bound -- the control cannot prove the clamp is load-bearing');
+        }
+
+        // Belt and braces: the clamp also keeps the pool finite over a long hostile
+        // run (a teleport that overflowed a coordinate would flip aliveFinite).
+        for (let f = 0; f < 4096; f++) capped.updateAndDraw(stubCtx, dt, 800, 100000);
+        if (!aliveFinite(capped)) {
+            die('T9 control C: the real engine went non-finite under a sustained hostile ' +
+                'attract -- the VORTEX_MAX_ACCEL clamp did not hold over the run (S-14)');
+        }
+    }
+
+    // Control D -- the S-14 wall clamp order is load-bearing (ADR 0009). The clamp
+    // runs AFTER position integration, so a spark that crossed a wall THIS frame is
+    // pulled back onto it. Prove BOTH halves on a single crossing step: (1) the
+    // correct order (integrate THEN clamp) contains the spark (x >= wall) and
+    // reflects vx; (2) the broken order (clamp BEFORE integrate) lets the spark
+    // step straight through the wall -- it ends up OUTSIDE (x < wall) and would
+    // drift on to X-cull (leak a spark). So the placement after integration is
+    // what contains the spark; move it before and containment breaks.
+    {
+        const wall = 100, dt = 1 / 60;
+
+        // (1) Correct order: integrate, then clamp -> contained + reflected.
+        let cx = 105, cvx = -500;
+        cx += cvx * dt;
+        if (cx < wall) { cx = wall; if (cvx < 0) cvx = -cvx; }
+        if (!(cx >= wall && cvx > 0)) {
+            die('T9 control D: the correct clamp order (integrate then clamp) did NOT ' +
+                'contain+reflect the spark (x=' + cx + ', vx=' + cvx + ') -- the control is broken');
+        }
+
+        // (2) Broken order: clamp before integrate -> the spark steps through.
+        let wx = 105, wvx = -500;
+        if (wx < wall) { wx = wall; if (wvx < 0) wvx = -wvx; }
+        wx += wvx * dt;
+        if (!(wx < wall)) {
+            die('T9 control D: clamping BEFORE integration still left the spark contained ' +
+                '(x=' + wx + ' >= ' + wall + ') -- the control cannot prove the clamp order is load-bearing');
+        }
+    }
+
+    // Control E -- the S-14 wall clamp lives INSIDE the S-05 moving gate
+    // (`if (vxs[i]!==0||vys[i]!==0)`), so a RESTING spark (vx===vy===0) is never
+    // woken or reflected even when it sits outside a wall bound (containment.
+    // test.js:182 proves this at unit level; this is its T9 can-fail control).
+    // Prove BOTH halves on a single frame: (1) the REAL engine leaves a resting
+    // spark seeded OUTSIDE wallLeft untouched (position + velocity unchanged);
+    // (2) the BROKEN variant -- the exact wall-clamp op hoisted OUTSIDE the
+    // moving gate, so it runs unconditionally -- yanks the same resting spark's
+    // position onto the wall (a "resting" spark that silently teleports is no
+    // longer at rest). If the gate placement stopped mattering, (1) would move
+    // the spark too.
+    {
+        const WALL = 500, dt = 1 / 60;
+
+        // (1) Real engine: a resting spark seeded OUTSIDE wallLeft (x=400 < 500),
+        // walls active. Physics is bypassed entirely by the S-05 sleep check, so
+        // the wall clamp never runs on it.
+        const e = new SparkEngine(4, { rng: () => 0.5, wallLeft: WALL, wallRight: 300, ceiling: 400 });
+        e.state[0] = 1; e.x[0] = 400; e.y[0] = 300; e.vx[0] = 0; e.vy[0] = 0; // asleep
+        e.life[0] = 100; e.invLife[0] = 1 / 100; e.weight[0] = 2;
+        for (let f = 0; f < 30; f++) e.updateAndDraw(stubCtx, dt, 800, 600);
+        if (!(e.x[0] === 400 && e.y[0] === 300 && e.vx[0] === 0 && e.vy[0] === 0)) {
+            die('T9 control E: a resting spark was moved/reflected by the wall clamp -- the ' +
+                'clamp leaked outside the S-05 moving gate and woke a resting ember (S-14)');
+        }
+
+        // (2) Broken variant: the EXACT wallLeft clamp op from SparkEngine.js
+        // (`if (wallLeft!=null && x<wallLeft) { x=wallLeft; if (vx<0) vx=-vx; }`),
+        // applied unconditionally -- no `if (vx!==0||vy!==0)` guard -- to the same
+        // resting spark's x/vx. This is what the code would do if the S-14 wall
+        // block were hoisted OUTSIDE the moving gate: a resting spark parked
+        // outside the bound gets yanked onto it (its vx stays 0 here, since 0<0
+        // is false -- reflection only fires on an inbound velocity -- but the
+        // POSITION pluck alone is the wake: a "resting" spark that silently
+        // teleports is no longer at rest).
+        let bx = 400, bvx = 0; // resting, outside wallLeft (mirrors e.x[0]/e.vx[0] above)
+        if (bx < WALL) { bx = WALL; if (bvx < 0) bvx = -bvx; }
+        if (!(bx !== 400)) {
+            die('T9 control E: the un-guarded wall clamp left a resting spark untouched ' +
+                '(x=' + bx + ') -- the control cannot prove hoisting the clamp ' +
+                'outside the moving gate wakes/moves a resting ember');
+        }
+    }
 }

@@ -31,6 +31,16 @@ const NOOP = function () {};
 
 export function run() {
     const engine = new SparkEngine(MAX, { rng: () => 0.5 });
+    // S-14 containment lane. A wall-contained spark NEVER X-culls, so the pool
+    // drains ONLY by life expiry + ring eviction -- the soak MUST cover walls-on
+    // to prove a contained pool still returns to empty every cycle (ADR 0009). The
+    // bounds/center sit inside the canvas so the hot `if (walls)` + vortex branch
+    // run every frame; run-to-death (life <= 0) is the only drain here.
+    const contain = new SparkEngine(MAX, {
+        rng: () => 0.5,
+        wallLeft: 100, wallRight: 700, ceiling: 50,
+        attract: 2000, swirl: 500, attractX: W / 2, attractY: H / 2,
+    });
     const tracker = createLeakTracker({ name: 'sparks-soak' });
 
     globalThis.gc();
@@ -58,6 +68,18 @@ export function run() {
             () => 'T7: cycle ' + c + ' left ' + aliveCount(engine) + ' alive (stuck particle -- S-05)');
         check(aliveFinite(engine),
             () => 'T7: cycle ' + c + ' left a non-finite live particle');
+
+        // Containment lane: full pool, run-to-death every cycle. Wall-contained
+        // sparks cannot X-cull, so this proves life expiry alone drains the pool.
+        contain.burst(W / 2, H / 2, MAX, 0, TAU, 100, 800);
+        check(aliveCount(contain) === MAX,
+            () => 'T7.contain: cycle ' + c + ' burst filled ' + aliveCount(contain) + ' != ' + MAX);
+        for (let f = 0; f < DRAIN_FRAMES; f++) contain.updateAndDraw(stubCtx, 0.1, W, H);
+        check(aliveCount(contain) === 0,
+            () => 'T7.contain: cycle ' + c + ' left ' + aliveCount(contain) +
+                  ' alive -- a contained spark did not drain by life expiry (S-14)');
+        check(aliveFinite(contain),
+            () => 'T7.contain: cycle ' + c + ' left a non-finite live particle');
     }
 
     check(tracker.size() === 0,

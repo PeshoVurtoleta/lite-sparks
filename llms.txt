@@ -2,7 +2,7 @@
 
 > Zero-GC SoA spark and debris engine. Velocity stretching, floor bounce, thermodynamic OKLCH heat gradient. One dependency.
 
-Version: 1.3.0
+Version: 1.3.1
 
 ## Install
 npm i @zakkster/lite-sparks
@@ -18,7 +18,10 @@ import { SparkEngine } from '@zakkster/lite-sparks';
 - invLife[] precomputed per-spawn -- avoids division in render loop
 - Sleep state: physics skipped when vx=0 && vy=0 (resting sparks on floor)
 - Air forces (v1.3.0): wind (constant push), gust (sin oscillation), turbulence (per-spark curl) -- one hoisted `if (aero)` gate, skipped when all knobs 0
-- Aero-off is byte-identical to v1.2.0: all knobs default 0 -> aero false -> the per-particle body is unchanged
+- Containment (v1.3.1): walls (wallLeft/wallRight/ceiling position clamp + velocity reflection) and vortex (attract radial pull + swirl tangential push toward attractX/attractY)
+- Walls are one hoisted `if (walls)` after the floor block, inside the moving gate (never wake a resting ember); vortex folds into the same `if (aero)` branch
+- Vortex accel is normalized and clamped per-axis to +/-VORTEX_MAX_ACCEL (4000, 5x default gravity) so a hostile attract/swirl cannot teleport a spark
+- Aero-off + containment-off is byte-identical to v1.2.0: all knobs default 0/null -> aero+walls false -> the per-particle body is unchanged
 - drag config: friendlier alias for friction (overrides it when != null; null is not zero)
 - Floor restitution: bounce with energy loss, velocity threshold kill
 - Vector velocity stretching: each spark is a line from (x,y) to (x-vx*stretch, y-vy*stretch)
@@ -44,8 +47,12 @@ import { SparkEngine } from '@zakkster/lite-sparks';
 ## Config
 gravity (800), friction (0.99), floorFriction (0.85), restitution (0.4),
 stretch (0.04), drag (null->friction), wind (0), gust (0), turbulence (0),
-transparentBackground (false), autoClear (true), floorY (null->h),
-heatColors (4 OKLCH), rng (Math.random)
+wallLeft (null), wallRight (null), ceiling (null), attract (0), swirl (0),
+attractX (0), attractY (0), transparentBackground (false), autoClear (true),
+floorY (null->h), heatColors (4 OKLCH), rng (Math.random)
+- walls: wallLeft/wallRight clamp x + reflect vx, ceiling clamps y + reflects vy (null = no wall; null is not zero)
+- vortex: attract pulls toward (attractX, attractY), swirl adds a perpendicular tangential push; both clamped per-axis to +/-4000 px/s^2
+- walls + vortex act only on MOVING sparks (inside the S-05 sleep gate) -- they never wake a resting ember
 - friction is dt-independent: applied as pow(friction, dt*60), 60fps byte-identical
 - drag is an alias for friction: when != null it overrides friction (null is not zero)
 - wind is a constant px/s^2 horizontal push; gust adds a sin oscillation (TAU/3 rad/s, 3s period)

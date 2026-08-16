@@ -24,6 +24,20 @@ export interface SparkConfig {
     gust?: number;
     /** Turbulence amplitude in px/s^2: a per-spark curl seeded by invLife. 0 disables it. Default: 0 */
     turbulence?: number;
+    /** Left wall X: a moving spark is clamped to x >= wallLeft and its inward vx reflected. null = no wall (null is not zero). Default: null */
+    wallLeft?: number | null;
+    /** Right wall X: a moving spark is clamped to x <= wallRight and its inward vx reflected. null = no wall. Default: null */
+    wallRight?: number | null;
+    /** Ceiling Y: a moving spark is clamped to y >= ceiling and its inward vy reflected. null = no ceiling. Default: null */
+    ceiling?: number | null;
+    /** Vortex radial pull toward (attractX, attractY) in px/s^2; negative repels. Clamped per-axis to +/-4000. 0 disables it. Default: 0 */
+    attract?: number;
+    /** Vortex tangential (swirl) push perpendicular to the radius in px/s^2. Clamped per-axis to +/-4000. 0 disables it. Default: 0 */
+    swirl?: number;
+    /** Vortex center X. Read only when attract/swirl is non-zero. Default: 0 */
+    attractX?: number;
+    /** Vortex center Y. Read only when attract/swirl is non-zero. Default: 0 */
+    attractY?: number;
     /** true = source-over (light bg), false = additive 'lighter' (dark bg). Default: false */
     transparentBackground?: boolean;
     /** true wipes the canvas each frame; false draws over existing pixels (layer over a game/scratch surface). Default: true */

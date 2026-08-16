@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-sparks v1.3.0
+ * @zakkster/lite-sparks v1.3.1
  * Zero-GC, SoA Spark & Debris Engine
  * Features vector velocity stretching, floor restitution, and a precomputed thermodynamic heat gradient.
  * Supports dark mode (additive blending) and light mode (source-over).
@@ -7,7 +7,7 @@
 
 import { toCssOklch } from '@zakkster/lite-color';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.3.1';
 
 // S-06: post-move X-cull margin. A velocity-stretched tail can trail up to this
 // many px behind the head, so a spark keeps drawing until head+tail clear the
@@ -21,6 +21,15 @@ const CULL_MARGIN = 200;
 const TAU = Math.PI * 2;
 const GUST_HZ = TAU / 3;
 const TURB_K = 1000;
+
+// S-14 vortex clamp. VORTEX_MAX_ACCEL caps EACH AXIS of the combined
+// radial (attract) + tangential (swirl) vortex acceleration at +/-4000 px/s^2 --
+// 5x the default gravity (800). The vortex direction is normalized, so |accel|
+// is bounded by |attract|+|swirl| already; the clamp bounds a HOSTILE scalar
+// (e.g. attract=-1e9, or the accumulation of a very large one over many frames)
+// so it can never fling a spark off-screen in a frame or run velocity out to a
+// non-finite value. Fail closed on the config door (ADR 0010).
+const VORTEX_MAX_ACCEL = 4000;
 
 const DEFAULT_HEAT = [
     { l: 0.30, c: 0.20, h: 20 },   // Cold/Dying (Cherry Red)
@@ -42,6 +51,19 @@ export class SparkEngine {
             wind: 0,
             gust: 0,
             turbulence: 0,
+            // S-14 containment (cold path). Walls are position clamps; null means
+            // "no wall" on that side (null is not zero -- a wall AT 0 is a real
+            // edge). Vortex scalars default 0 (off). attractX/attractY are the
+            // vortex center, read ONLY when the vortex gate is live, so they
+            // default to 0 (the caller sets them alongside attract) -- no runtime
+            // "center" is invented in the cold path (ADR 0009/0010).
+            wallLeft: null,
+            wallRight: null,
+            ceiling: null,
+            attract: 0,
+            swirl: 0,
+            attractX: 0,
+            attractY: 0,
             transparentBackground: false,
             autoClear: true,
             floorY: null,
@@ -68,6 +90,22 @@ export class SparkEngine {
         if (this.config.drag != null && Number.isFinite(this.config.drag)) {
             this.config.friction = this.config.drag;
         }
+
+        // S-14 fail-closed containment knobs (cold path). Walls: a non-finite
+        // bound -> null ("no wall"), so `walls` stays off and the hot clamp is
+        // byte-identical dead; null is not zero, so a wall AT 0 (finite) is
+        // honoured. Vortex scalars: a non-finite attract/swirl/center -> 0.
+        // A non-finite attract would flip the `attract!==0` gate ON and feed
+        // `vx += NaN`, re-opening the S-01 whole-pool poison class through the
+        // config door (the same hazard the aero knobs close, ADR 0008). Sanitized
+        // ONCE here so the hot loop only ever sees finite operands. Zero hot bytes.
+        if (!Number.isFinite(this.config.wallLeft)) this.config.wallLeft = null;
+        if (!Number.isFinite(this.config.wallRight)) this.config.wallRight = null;
+        if (!Number.isFinite(this.config.ceiling)) this.config.ceiling = null;
+        if (!Number.isFinite(this.config.attract)) this.config.attract = 0;
+        if (!Number.isFinite(this.config.swirl)) this.config.swirl = 0;
+        if (!Number.isFinite(this.config.attractX)) this.config.attractX = 0;
+        if (!Number.isFinite(this.config.attractY)) this.config.attractY = 0;
 
         this.colors = this.config.heatColors.map(c => typeof c === 'string' ? c : toCssOklch(c));
         this._colorLen = this.colors.length;
@@ -209,7 +247,25 @@ export class SparkEngine {
         const turb = cfg.turbulence;
         const gust = cfg.gust;
         const gustNow = gust !== 0 ? Math.sin(el * GUST_HZ) * gust : 0;
-        const aero = wind !== 0 || gustNow !== 0 || turb !== 0;
+
+        // S-14 vortex (folded into the SAME aero gate). attract pulls each moving
+        // spark toward (attractX, attractY); swirl adds a perpendicular tangential
+        // push. Both are per-spark (they depend on the spark's own position) so,
+        // unlike gust, they cannot be pre-sampled once -- but they ride the ONE
+        // `if (aero)` branch, adding no new per-particle gate (ADR 0010).
+        const attract = cfg.attract;
+        const swirl = cfg.swirl;
+        const attractX = cfg.attractX;
+        const attractY = cfg.attractY;
+        const aero = wind !== 0 || gustNow !== 0 || turb !== 0 || attract !== 0 || swirl !== 0;
+
+        // S-14 walls (its own hoisted gate, one hot `if (walls)`). A null bound is
+        // "no wall" (null is not zero); `walls` is false when all three are null,
+        // so the clamp below is byte-identical dead at the default (ADR 0009).
+        const wallLeft = cfg.wallLeft;
+        const wallRight = cfg.wallRight;
+        const ceiling = cfg.ceiling;
+        const walls = wallLeft != null || wallRight != null || ceiling != null;
 
         const colorLen = this._colorLen;
         const colors = this.colors;
@@ -262,6 +318,30 @@ export class SparkEngine {
                         vxs[i] += Math.cos(p) * turb * dt;
                         vys[i] += Math.sin(p) * turb * dt;
                     }
+                    // S-14 vortex: radial pull toward (attractX, attractY) scaled
+                    // by `attract`, plus a perpendicular tangential push scaled by
+                    // `swirl` -- tangent is (-dy, dx)/dist, a 90deg rotation of the
+                    // radial unit vector. dist === 0 is skipped (fail closed: the
+                    // direction is undefined at the center, and it avoids a divide-
+                    // by-zero). Each axis is clamped to +/-VORTEX_MAX_ACCEL so a
+                    // hostile scalar can never go non-finite or teleport a spark
+                    // (ADR 0010). Zero allocation -- every operand is a hoisted
+                    // scalar or an SoA read; no temp object, no array.
+                    if (attract !== 0 || swirl !== 0) {
+                        const dx = attractX - xs[i];
+                        const dy = attractY - ys[i];
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist !== 0) {
+                            const inv = 1 / dist;
+                            const nx = dx * inv, ny = dy * inv;
+                            let ax = attract * nx - swirl * ny;
+                            let ay = attract * ny + swirl * nx;
+                            ax = ax < -VORTEX_MAX_ACCEL ? -VORTEX_MAX_ACCEL : ax > VORTEX_MAX_ACCEL ? VORTEX_MAX_ACCEL : ax;
+                            ay = ay < -VORTEX_MAX_ACCEL ? -VORTEX_MAX_ACCEL : ay > VORTEX_MAX_ACCEL ? VORTEX_MAX_ACCEL : ay;
+                            vxs[i] += ax * dt;
+                            vys[i] += ay * dt;
+                        }
+                    }
                 }
 
                 xs[i] += vxs[i] * dt;
@@ -279,6 +359,22 @@ export class SparkEngine {
                     if (vys[i] === 0 && Math.abs(vxs[i]) < 5) {
                         vxs[i] = 0;
                     }
+                }
+
+                // S-14 walls: reflect velocity and contain position at each set
+                // bound. Placed AFTER the floor block (so a floor-rested spark's
+                // clamped position wins) and INSIDE the moving gate (S-05): walls
+                // never wake a resting ember, mirroring "wind does not wake
+                // resting embers" (ADR 0008). The clamp is AFTER integration, so a
+                // spark that crossed a wall THIS frame is pulled back onto it and
+                // its inward velocity reflected out (ADR 0009). vx at the side
+                // walls, vy at the ceiling; the sign test avoids re-flipping a
+                // spark already moving away. `walls` is false at the default -> the
+                // whole block is byte-identical dead.
+                if (walls) {
+                    if (wallLeft != null && xs[i] < wallLeft) { xs[i] = wallLeft; if (vxs[i] < 0) vxs[i] = -vxs[i]; }
+                    if (wallRight != null && xs[i] > wallRight) { xs[i] = wallRight; if (vxs[i] > 0) vxs[i] = -vxs[i]; }
+                    if (ceiling != null && ys[i] < ceiling) { ys[i] = ceiling; if (vys[i] < 0) vys[i] = -vys[i]; }
                 }
             }
 

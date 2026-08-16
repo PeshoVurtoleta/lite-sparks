@@ -119,6 +119,19 @@ export function run() {
     aeroLane('gust', { gust: 300 });
     aeroLane('turb', { turbulence: 400 });
     aeroLane('all', { wind: 300, gust: 300, turbulence: 400 });
+
+    // ---- Scene D: S-14 containment lanes -- walls + vortex allocate nothing --
+    // The wall clamp (hot `if (walls)`) and the vortex accel (folded into the
+    // `if (aero)` branch) run under a full pool with the bounds/center inside the
+    // canvas so the branches are actually taken every frame. Each lane pins all
+    // TWELVE backing stores byte-identical and gates a major GC / >4ms pause: the
+    // containment feature grows no buffer and allocates nothing (ADR 0009/0010).
+    aeroLane('walls', { wallLeft: 100, wallRight: 700, ceiling: 50 });
+    aeroLane('vortex', { attract: 2000, swirl: 500, attractX: W / 2, attractY: H / 2 });
+    aeroLane('containment-all', {
+        wallLeft: 100, wallRight: 700, ceiling: 50,
+        attract: 2000, swirl: 500, attractX: W / 2, attractY: H / 2,
+    });
 }
 
 /**

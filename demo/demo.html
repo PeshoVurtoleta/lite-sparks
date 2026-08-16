@@ -3,7 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>lite-spark Playground</title>
+    <title>lite-sparks Playground</title>
+
+    <!--
+      Local dogfood build: this demo runs the WORKING-TREE engine
+      (../SparkEngine.js), not a published npm version, so every feature
+      through v1.3.1 (air + containment) is exercised before release.
+      The engine's only dependency, @zakkster/lite-color, is pulled from
+      the CDN via the import map below.
+    -->
+    <script type="importmap">
+    {
+      "imports": {
+        "@zakkster/lite-color": "https://esm.run/@zakkster/lite-color@2.1.0"
+      }
+    }
+    </script>
+
     <style>
         body, html {
             margin: 0;
@@ -42,6 +58,8 @@
             left: 20px;
             z-index: 10;
             width: 320px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
             background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
@@ -57,14 +75,29 @@
             border: 1px solid rgba(0, 0, 0, 0.1);
         }
 
-        body.light label, body.light h2, body.light span {
+        body.light label, body.light h2, body.light h3, body.light span {
             color: #1a202c !important;
         }
 
         h2 {
-            margin: 0 0 15px 0;
+            margin: 0 0 4px 0;
             font-size: 18px;
             font-weight: 600;
+        }
+
+        .hint {
+            font-size: 11px;
+            opacity: 0.6;
+            margin: 0 0 15px 0;
+        }
+
+        h3 {
+            margin: 16px 0 8px 0;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            opacity: 0.7;
         }
 
         .control-group {
@@ -88,7 +121,7 @@
         .presets {
             display: flex;
             gap: 8px;
-            margin-top: 20px;
+            margin-top: 10px;
         }
 
         button {
@@ -121,7 +154,7 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-top: 15px;
+            margin-top: 10px;
             font-size: 14px;
             font-weight: 600;
         }
@@ -131,51 +164,87 @@
 
 <div id="panel">
     <h2>Spark Engine Config</h2>
+    <p class="hint">Click / drag on the canvas to emit. Working-tree build v1.3.1.</p>
 
+    <h3>Ballistics</h3>
     <div class="control-group">
         <label>Gravity <span id="gravVal">800</span></label>
-        <input type="range" id="gravity" min="100" max="2000" step="50" value="800">
+        <input type="range" id="gravity" min="0" max="2000" step="50" value="800">
     </div>
-
     <div class="control-group">
         <label>Bounciness (Restitution) <span id="restVal">0.4</span></label>
         <input type="range" id="restitution" min="0" max="0.9" step="0.1" value="0.4">
     </div>
-
     <div class="control-group">
         <label>Velocity Stretch <span id="stretchVal">0.04</span></label>
         <input type="range" id="stretch" min="0.01" max="0.15" step="0.01" value="0.04">
     </div>
 
+    <h3>Air (v1.3.0)</h3>
+    <div class="control-group">
+        <label>Wind <span id="windVal">0</span></label>
+        <input type="range" id="wind" min="-800" max="800" step="20" value="0">
+    </div>
+    <div class="control-group">
+        <label>Gust <span id="gustVal">0</span></label>
+        <input type="range" id="gust" min="0" max="600" step="20" value="0">
+    </div>
+    <div class="control-group">
+        <label>Turbulence <span id="turbVal">0</span></label>
+        <input type="range" id="turbulence" min="0" max="800" step="20" value="0">
+    </div>
+
+    <h3>Containment (v1.3.1)</h3>
+    <div class="control-group">
+        <label>Vortex Attract <span id="attractVal">0</span></label>
+        <input type="range" id="attract" min="-3000" max="3000" step="100" value="0">
+    </div>
+    <div class="control-group">
+        <label>Vortex Swirl <span id="swirlVal">0</span></label>
+        <input type="range" id="swirl" min="0" max="3000" step="100" value="0">
+    </div>
+    <div class="toggle-row">
+        <span>Box Walls (bounce in-bounds)</span>
+        <input type="checkbox" id="wallsToggle">
+    </div>
+
+    <h3>Compositing</h3>
+    <div class="toggle-row">
+        <span>Trails (autoClear off)</span>
+        <input type="checkbox" id="clearToggle">
+    </div>
     <div class="toggle-row">
         <span>Light Mode Background</span>
         <input type="checkbox" id="bgToggle">
     </div>
 
+    <h3>Emitter Mode</h3>
     <div class="presets">
         <button id="btnWeld">Welding Arc</button>
         <button id="btnImpact">Impact</button>
         <button id="btnDrip">Molten Drip</button>
+    </div>
+
+    <h3>Field Preset</h3>
+    <div class="presets">
+        <button id="btnWind">Windblown</button>
+        <button id="btnTornado">Tornado</button>
+        <button id="btnBoxed">Boxed</button>
     </div>
 </div>
 
 <canvas id="stage"></canvas>
 
 <script type="module">
-    import {SparkEngine} from 'https://esm.run/@zakkster/lite-sparks@1.0.0';
+    import {SparkEngine} from '../SparkEngine.js';
 
-    // --- INLINED ENGINE CODE FOR DEMO ---
-    const DEFAULT_HEAT = [
-        'oklch(0.30 0.20 20)', 'oklch(0.60 0.25 30)', 'oklch(0.85 0.20 70)', 'oklch(0.98 0.05 90)'
-    ];
-
-    // --- APP WIRING ---
     const canvas = document.getElementById('stage');
     const ctx = canvas.getContext('2d');
     const sparks = new SparkEngine();
 
     let w = 0, h = 0;
     const dpr = window.devicePixelRatio || 1;
+    const WALL_INSET = 8; // px the box walls sit in from each edge
 
     function updateSize() {
         w = window.innerWidth;
@@ -184,53 +253,112 @@
         canvas.height = h * dpr;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.scale(dpr, dpr);
+        // Bounds that depend on the viewport are recomputed here so a resize
+        // never leaves a wall or vortex centre stranded at the old dimensions.
+        applyFieldBounds();
     }
-
-    window.addEventListener('resize', updateSize);
-    updateSize();
 
     // UI WIRING
     const dom = {
         grav: document.getElementById('gravity'), gravVal: document.getElementById('gravVal'),
         rest: document.getElementById('restitution'), restVal: document.getElementById('restVal'),
         stretch: document.getElementById('stretch'), stretchVal: document.getElementById('stretchVal'),
+        wind: document.getElementById('wind'), windVal: document.getElementById('windVal'),
+        gust: document.getElementById('gust'), gustVal: document.getElementById('gustVal'),
+        turb: document.getElementById('turbulence'), turbVal: document.getElementById('turbVal'),
+        attract: document.getElementById('attract'), attractVal: document.getElementById('attractVal'),
+        swirl: document.getElementById('swirl'), swirlVal: document.getElementById('swirlVal'),
+        walls: document.getElementById('wallsToggle'),
+        clear: document.getElementById('clearToggle'),
         bg: document.getElementById('bgToggle')
     };
 
     let currentMode = 'weld';
 
+    // Walls and the vortex centre track the live viewport. Keeping this in one
+    // place means updateUI (a knob moved) and updateSize (the window resized)
+    // both stay correct without duplicating the box maths.
+    function applyFieldBounds() {
+        if (dom.walls.checked) {
+            sparks.config.wallLeft = WALL_INSET;
+            sparks.config.wallRight = w - WALL_INSET;
+            sparks.config.ceiling = WALL_INSET;
+        } else {
+            sparks.config.wallLeft = null;
+            sparks.config.wallRight = null;
+            sparks.config.ceiling = null;
+        }
+        // Vortex swirls around the middle of the stage.
+        sparks.config.attractX = w / 2;
+        sparks.config.attractY = h / 2;
+    }
+
     function updateUI() {
         dom.gravVal.innerText = dom.grav.value;
         dom.restVal.innerText = dom.rest.value;
         dom.stretchVal.innerText = dom.stretch.value;
+        dom.windVal.innerText = dom.wind.value;
+        dom.gustVal.innerText = dom.gust.value;
+        dom.turbVal.innerText = dom.turb.value;
+        dom.attractVal.innerText = dom.attract.value;
+        dom.swirlVal.innerText = dom.swirl.value;
 
         sparks.config.gravity = parseFloat(dom.grav.value);
         sparks.config.restitution = parseFloat(dom.rest.value);
         sparks.config.stretch = parseFloat(dom.stretch.value);
+        sparks.config.wind = parseFloat(dom.wind.value);
+        sparks.config.gust = parseFloat(dom.gust.value);
+        sparks.config.turbulence = parseFloat(dom.turb.value);
+        sparks.config.attract = parseFloat(dom.attract.value);
+        sparks.config.swirl = parseFloat(dom.swirl.value);
+        sparks.config.autoClear = !dom.clear.checked;
+        applyFieldBounds();
+
         document.body.className = dom.bg.checked ? 'light' : 'dark';
     }
 
-    [dom.grav, dom.rest, dom.stretch, dom.bg].forEach(el => el.addEventListener('input', updateUI));
+    [dom.grav, dom.rest, dom.stretch, dom.wind, dom.gust, dom.turb,
+     dom.attract, dom.swirl, dom.walls, dom.clear, dom.bg]
+        .forEach(el => el.addEventListener('input', updateUI));
 
+    window.addEventListener('resize', updateSize);
+    updateSize();
+    updateUI();
+
+    // Emitter modes change the burst shape (wired into the loop below).
     document.getElementById('btnWeld').onclick = () => {
         currentMode = 'weld';
-        dom.grav.value = 600;
-        dom.rest.value = 0.5;
-        dom.stretch.value = 0.05;
+        dom.grav.value = 600; dom.rest.value = 0.5; dom.stretch.value = 0.05;
         updateUI();
     };
     document.getElementById('btnImpact').onclick = () => {
         currentMode = 'impact';
-        dom.grav.value = 1200;
-        dom.rest.value = 0.3;
-        dom.stretch.value = 0.03;
+        dom.grav.value = 1200; dom.rest.value = 0.3; dom.stretch.value = 0.03;
         updateUI();
     };
     document.getElementById('btnDrip').onclick = () => {
         currentMode = 'drip';
-        dom.grav.value = 400;
-        dom.rest.value = 0.1;
-        dom.stretch.value = 0.08;
+        dom.grav.value = 400; dom.rest.value = 0.1; dom.stretch.value = 0.08;
+        updateUI();
+    };
+
+    // Field presets drive the air / containment knobs to a showcase setting.
+    document.getElementById('btnWind').onclick = () => {
+        dom.grav.value = 200; dom.wind.value = 320; dom.gust.value = 220;
+        dom.turb.value = 280; dom.attract.value = 0; dom.swirl.value = 0;
+        dom.walls.checked = false;
+        updateUI();
+    };
+    document.getElementById('btnTornado').onclick = () => {
+        dom.grav.value = 0; dom.wind.value = 0; dom.gust.value = 0;
+        dom.turb.value = 120; dom.attract.value = 1400; dom.swirl.value = 2200;
+        dom.walls.checked = false;
+        updateUI();
+    };
+    document.getElementById('btnBoxed').onclick = () => {
+        dom.grav.value = 900; dom.rest.value = 0.7; dom.wind.value = 200;
+        dom.gust.value = 0; dom.turb.value = 120; dom.attract.value = 0;
+        dom.swirl.value = 0; dom.walls.checked = true;
         updateUI();
     };
 

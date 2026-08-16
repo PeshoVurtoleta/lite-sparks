@@ -5,6 +5,46 @@ All notable changes to `@zakkster/lite-sparks` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-08-15
+
+Containment (roadmap session S4b, the walls + vortex wave). Sparks can now be
+bounded and swirled: three optional walls (`wallLeft`, `wallRight`, `ceiling`)
+reflect a moving spark's velocity and clamp its position, and a vortex
+(`attract` radial pull + `swirl` tangential push toward `attractX`/`attractY`)
+folds into the existing air-force branch. The hot path grows exactly one new
+`if (walls)` clamp after the floor block plus the vortex accel inside the single
+`if (aero)` gate -- both dead (byte-identical to v1.2.0) at the default, where
+every wall is null and every vortex scalar is 0. Proven: the aero-off /
+containment-off render fingerprint is unchanged (`2975953379`), and a default
+seeded run's x/y/vx/vy/life/state snapshot is Object.is-identical to v1.2.0. Zero
+new allocation and zero new SoA column.
+
+### Added
+
+- **S-14** walls. Three cold config keys -- `wallLeft`, `wallRight`, `ceiling`
+  (all default `null`, "no wall"; null is not zero, so a wall AT 0 is honoured).
+  A moving spark is clamped to the bound and its inward velocity reflected (vx at
+  the side walls, vy at the ceiling), in one hoisted `if (walls)` placed AFTER the
+  floor block and INSIDE the S-05 moving gate -- walls never wake a resting ember
+  (mirror of "wind does not wake resting embers", ADR 0008). Rationale in
+  `decisions/0009-walls.md`.
+- **S-14** vortex. Four cold config keys -- `attract` (radial pull toward the
+  center, negative repels), `swirl` (a perpendicular tangential push), and
+  `attractX`/`attractY` (the center, read only when the vortex is live; default
+  0). The accel is normalized by distance (dist===0 is skipped -- fail closed, no
+  divide-by-zero) and clamped per-axis to `+/-VORTEX_MAX_ACCEL` (4000, 5x the
+  default gravity), then folded into the existing `if (aero)` disjunction
+  (`aero = wind!==0 || gustNow!==0 || turb!==0 || attract!==0 || swirl!==0`) --
+  no new per-particle gate. Rationale in `decisions/0010-vortex.md`.
+
+### Changed
+
+- **S-14** fail-closed containment knobs. A non-finite `wallLeft`/`wallRight`/
+  `ceiling` is coerced to `null` (no wall), and a non-finite `attract`/`swirl`/
+  `attractX`/`attractY` to `0` (off), ONCE in the cold constructor -- a hostile
+  config can never NaN the pool through the vortex gate the way a non-finite air
+  knob would (the S-01 whole-pool poison class, ADR 0008). Zero hot bytes.
+
 ## [1.3.0] - 2026-08-15
 
 Air (roadmap session S4, the aerodynamics wave). Sparks now respond to moving
