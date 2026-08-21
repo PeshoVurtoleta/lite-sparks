@@ -84,15 +84,23 @@ export declare class SparkEngine {
 
     /**
      * Spawn a burst of sparks at (x, y) within an angular cone.
+     *
+     * S-16 (v1.4.1) finiteness door: the six cone/speed/life args are each
+     * coerced independently with Number.isFinite at entry, so a hostile
+     * NaN/Infinity value fails closed instead of NaN-poisoning the pool. A
+     * non-finite angleMin/angleMax -> 0, speedMin/speedMax -> 0 (a zero speed
+     * rides the S-05 epsilon and falls under gravity), lifeMin -> 0.5 /
+     * lifeMax -> 1.5 (the documented defaults). Valid (all-finite) bursts skip
+     * the coercion, so the seeded rng sequence is untouched.
      * @param x         Origin X
      * @param y         Origin Y
      * @param count     Number of sparks to spawn (< 1, NaN, or Infinity spawn 0; floored to an integer)
-     * @param angleMin  Emission cone start (radians)
-     * @param angleMax  Emission cone end (radians)
-     * @param speedMin  Minimum launch speed (px/s)
-     * @param speedMax  Maximum launch speed (px/s)
-     * @param lifeMin   Minimum lifetime (seconds). Default: 0.5
-     * @param lifeMax   Maximum lifetime (seconds). Default: 1.5
+     * @param angleMin  Emission cone start (radians; non-finite -> 0)
+     * @param angleMax  Emission cone end (radians; non-finite -> 0)
+     * @param speedMin  Minimum launch speed (px/s; non-finite -> 0)
+     * @param speedMax  Maximum launch speed (px/s; non-finite -> 0)
+     * @param lifeMin   Minimum lifetime (seconds). Default: 0.5 (non-finite -> 0.5)
+     * @param lifeMax   Maximum lifetime (seconds). Default: 1.5 (non-finite -> 1.5)
      */
     burst(
         x: number, y: number, count: number,

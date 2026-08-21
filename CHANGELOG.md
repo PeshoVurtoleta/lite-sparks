@@ -5,6 +5,35 @@ All notable changes to `@zakkster/lite-sparks` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-08-21
+
+Fail-closed hardening (roadmap session S6). Closes the last unguarded door into
+the pool: `burst()`'s six cone/speed/life arguments. No new public API, no
+signature change, no hot-body change -- the per-particle spawn loop and
+`updateAndDraw` stay byte-identical, and every one of the fifteen committed
+fingerprints (`AERO_OFF_HASH = 2975953379`, wind/gust/turb, wall/ceil,
+vortex/swirl, weld/grind/impact/ember, emitter, scale/fade) is bit-identical.
+
+### Changed
+
+- **S-16** `burst()` finiteness door. The six positional cone/speed/life args
+  (`angleMin`/`angleMax`, `speedMin`/`speedMax`, `lifeMin`/`lifeMax`) are each
+  coerced INDEPENDENTLY with `Number.isFinite` at `burst()` entry -- after the
+  S-02 count door confirms there is work, before the spawn loop reads them. A
+  hostile `NaN`/`Infinity` arg is the S-01 whole-pool poison class through the
+  `burst()` door (`angleMin = NaN` -> `cos(NaN)` -> every spawned spark's vx/vy
+  goes `NaN`); the door fails it closed instead. Fallbacks: angle -> 0 (+x),
+  speed -> 0 (rides the S-05 epsilon and falls under gravity), lifeMin -> 0.5 /
+  lifeMax -> 1.5 (the documented positional defaults). A VALID (all-finite)
+  burst skips the coercion entirely, so the seeded rng sequence -- and every
+  committed fingerprint -- is untouched. Zero rng draws, zero hot bytes.
+  Rationale in `decisions/0014-burst-finiteness.md`.
+- **S-16** the S-11 spawn life clamp flips to the NaN-safe form
+  `if (!(life >= 1e-4))` (was `if (life < 1e-4)`), same instruction count. The
+  `< ` form is `false` for `NaN` so a non-finite life could slip through; the
+  `!(>=)` form is `true` for `NaN` and clamps it to `1e-4`, a second door on the
+  same hazard.
+
 ## [1.4.0] - 2026-08-21
 
 The debris vocabulary (roadmap session S5). Two new expressive surfaces and a

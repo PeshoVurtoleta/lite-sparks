@@ -70,6 +70,17 @@ const EMITTER_HASH = 187321740;
 const SCALE_HASH = 567134949;
 const FADE_HASH = 1421419957;
 
+// --- S-16 burst finiteness fingerprint (committed, default seed) ------------
+// BURST_HOSTILE pins the trajectory of a seeded scene whose bursts pass HOSTILE
+// cone/speed/life args (angleMin=NaN, speedMax=Infinity, lifeMin=NaN). Before
+// the S-16 door those args NaN-poisoned every spawned spark (cos(NaN) vx/vy);
+// the door coerces each independently (angle->0, speed->0 rides the S-05
+// epsilon, life->0.5/1.5 defaults), so the scene now hashes to a FINITE,
+// deterministic value. It must NOT equal AERO_OFF (a hostile burst is not the
+// same trajectory as the seeded upward cone) -- if it did, the door would have
+// produced the same spawn as valid input, which it must not (ADR 0014).
+const BURST_HOSTILE = 679574882;
+
 /** A deterministic float-in-[0,1) source from the seeded xorshift32. */
 function makeFloatRng(seed) {
     const prng = makePrng(seed);
@@ -93,6 +104,33 @@ function aeroScene(config) {
     let h = 0x811c9dc5;
     for (let fr = 0; fr < 90; fr++) {
         if ((fr % 6) === 0) e.burst(400, 500, 10, -TAU / 2, 0, 60, 420, 0.4, 1.2);
+        e.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
+        for (let i = 0; i < max; i++) {
+            h = mix(h, e.state[i]);
+            if (e.state[i] !== 1) continue;
+            h = mix(h, bits(e.x[i]));
+            h = mix(h, bits(e.y[i]));
+            h = mix(h, bits(e.vx[i]));
+            h = mix(h, bits(e.vy[i]));
+            h = mix(h, bits(e.life[i]));
+        }
+    }
+    return h;
+}
+
+/**
+ * S-16 hostile-burst scene: the SAME shape as aeroScene (seeded emitter over a
+ * tall canvas, 90 frames, fingerprint every live column), but every burst passes
+ * HOSTILE cone/speed/life args -- angleMin=NaN, speedMax=Infinity, lifeMin=NaN.
+ * Before the S-16 door these NaN-poisoned every spawned spark; now the door
+ * coerces them and the scene hashes to a finite, deterministic value.
+ */
+function burstHostileScene() {
+    const max = 128;
+    const e = new SparkEngine(max, { rng: makeFloatRng(SEED) });
+    let h = 0x811c9dc5;
+    for (let fr = 0; fr < 90; fr++) {
+        if ((fr % 6) === 0) e.burst(400, 500, 10, NaN, 0, 60, Infinity, NaN, 1.2);
         e.updateAndDraw(stubCtx, 1 / 60, 800, 100000);
         for (let i = 0; i < max; i++) {
             h = mix(h, e.state[i]);
@@ -801,5 +839,32 @@ export function run() {
         const nanRender = envRenderScene({ scaleTo: NaN, fadeOut: NaN });
         check(nanRender === batched,
             () => 'T0.envelope: a NaN scaleTo/fadeOut took the enveloped lane instead of the batched lane -- the NaN did NOT coerce to the off default');
+    }
+
+    // --- Law 17: S-16 burst finiteness door -- committed hash + finite witness
+    // A seeded scene whose bursts pass HOSTILE cone/speed/life args (angleMin=NaN,
+    // speedMax=Infinity, lifeMin=NaN) NaN-poisoned every spawned spark before the
+    // S-16 door. The door coerces each arg independently (angle->0, speed->0 rides
+    // the S-05 epsilon, life->0.5/1.5 defaults), so the scene now hashes to a
+    // FINITE, deterministic value. The committed fingerprint pins it; it must not
+    // collide with AERO_OFF (a hostile burst is a distinct trajectory) (ADR 0014).
+    {
+        const hostile = burstHostileScene();
+        if (SEED === 0x9e3779b9) {
+            check(hostile === BURST_HOSTILE,
+                () => 'T0.burstHostile: fingerprint moved -- got ' + hostile + ' want ' + BURST_HOSTILE);
+        }
+        check(hostile !== AERO_OFF_HASH,
+            () => 'T0.burstHostile: a hostile-args burst produced the aero-off fingerprint -- the S-16 door coerced to the valid-input spawn (it must not)');
+
+        // Finite witness: a single hostile burst into an empty pool leaves every
+        // spawned spark finite AND full (aliveCount === count) -- the door failed
+        // the hostile args closed, it did not drop or poison a spark.
+        const e = new SparkEngine(64, { rng: makeFloatRng(SEED) });
+        e.burst(400, 300, 10, NaN, Infinity, -Infinity, NaN, NaN, NaN);
+        check(aliveCount(e) === 10,
+            () => 'T0.burstHostile: hostile burst left ' + aliveCount(e) + ' alive != 10 (the count door still spawns; S-16 only sanitizes the cone/speed/life args)');
+        check(aliveFinite(e),
+            () => 'T0.burstHostile: a hostile-args burst left a spark non-finite -- the S-16 door leaked');
     }
 }

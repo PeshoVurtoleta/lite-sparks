@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-sparks v1.4.0
+ * @zakkster/lite-sparks v1.4.1
  * Zero-GC, SoA Spark & Debris Engine
  * Features vector velocity stretching, floor restitution, and a precomputed thermodynamic heat gradient.
  * Supports dark mode (additive blending) and light mode (source-over).
@@ -7,7 +7,7 @@
 
 import { toCssOklch } from '@zakkster/lite-color';
 
-export const VERSION = '1.4.0';
+export const VERSION = '1.4.1';
 
 // S-06: post-move X-cull margin. A velocity-stretched tail can trail up to this
 // many px behind the head, so a spark keeps drawing until head+tail clear the
@@ -173,6 +173,28 @@ export class SparkEngine {
         count = count >= 1 ? (count | 0) : 0;
         if (count === 0) return;
 
+        // S-16 burst finiteness door (cold path). The six cone/speed/life scalars
+        // are coerced ONCE here, AFTER the S-02 count door confirmed there is work
+        // to do and BEFORE the per-particle spawn loop reads them, so the hot body
+        // stays byte-identical and a VALID (all-finite) burst skips the coercion
+        // entirely -- the rng sequence, and every committed fingerprint, is
+        // untouched. A hostile scalar is the S-01 whole-pool poison class through
+        // the burst() door: angleMin=NaN -> `angle = NaN + rng()*(..)` -> cos/sin
+        // NaN -> vx/vy NaN on every spark this burst spawns. Each min/max is
+        // coerced INDEPENDENTLY (an inverted or half-NaN range is not "off", it is
+        // a real range with one hostile end). Fail-closed fallbacks: angle 0 is +x
+        // (a definite direction, not a guess); speed 0 rides the S-05 epsilon
+        // below (vx===vy===0 -> a tiny vy so gravity engages), so a NaN speed
+        // becomes a falling ember, not a frozen NaN; lifeMin/lifeMax fall back to
+        // the documented positional defaults (0.5 / 1.5). Zero rng draws, zero hot
+        // bytes (ADR 0014).
+        if (!Number.isFinite(angleMin)) angleMin = 0;
+        if (!Number.isFinite(angleMax)) angleMax = 0;
+        if (!Number.isFinite(speedMin)) speedMin = 0;
+        if (!Number.isFinite(speedMax)) speedMax = 0;
+        if (!Number.isFinite(lifeMin)) lifeMin = 0.5;
+        if (!Number.isFinite(lifeMax)) lifeMax = 1.5;
+
         const max = this.max;
         // S-08 (cold path): the pool holds at most `max` live sparks, so a burst
         // larger than the pool can only ever fill the pool. Cap the work at max --
@@ -214,9 +236,13 @@ export class SparkEngine {
 
             // S-11 (spawn, cold path): clamp life away from 0 so invLife is
             // never Infinity and colorIdx is never NaN. Also catches an
-            // inverted lifeMin/lifeMax that would compute a negative life.
+            // inverted lifeMin/lifeMax that would compute a negative life. The
+            // NaN-safe `!(life >= 1e-4)` form (S-16) also closes a non-finite
+            // life that slips the door: a plain `life < 1e-4` is FALSE for NaN,
+            // so a NaN would pass through; `!(life >= 1e-4)` is TRUE for NaN, so
+            // it clamps to 1e-4. Same instruction count.
             let life = lifeMin + rng() * (lifeMax - lifeMin);
-            if (life < 1e-4) life = 1e-4;
+            if (!(life >= 1e-4)) life = 1e-4;
             lifeA[i] = life;
             // -> Precompute the inverse for the render loop
             invLifeA[i] = 1.0 / life;

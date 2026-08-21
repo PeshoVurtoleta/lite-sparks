@@ -427,4 +427,43 @@ export function run() {
                 'cannot prove the globalAlpha restore is load-bearing');
         }
     }
+
+    // Control I -- the S-16 burst finiteness door is load-bearing (ADR 0014). The
+    // door coerces the six cone/speed/life args at burst() entry, so a hostile
+    // arg cannot NaN-poison a spawned spark. Prove BOTH halves. (1) The REAL
+    // engine, fed hostile args (angleMin=NaN, speedMax=Infinity, lifeMin=NaN),
+    // spawns a FINITE pool -- the door holds through the public API. (2) The SAME
+    // spawn WITHOUT the coercion -- replayed inline as the exact un-guarded op the
+    // loop would run (`vx = cos(angleMin + rng*(..)) * speed` with angleMin=NaN ->
+    // cos(NaN) -> NaN) -- poisons the slot, so `aliveFinite` FLIPS false. If the
+    // door were removed, the real engine's spawn becomes this un-coerced value, so
+    // assertion (1) would fail. The gate is provably able to fail.
+    {
+        // (1) Real engine, hostile burst args: the door coerces them, pool finite.
+        const e = new SparkEngine(64, { rng: () => 0.5 });
+        e.burst(400, 300, 8, NaN, 0, 60, Infinity, NaN, 1.2);
+        if (aliveCount(e) !== 8) {
+            die('T9 control I: a hostile-args burst spawned ' + aliveCount(e) +
+                ' != 8 -- the S-02 count door should still spawn count (S-16 only sanitizes args)');
+        }
+        if (!aliveFinite(e)) {
+            die('T9 control I: the S-16 burst door FAILED -- a hostile-args burst poisoned a ' +
+                'spawned spark through the public API (S-16 regression)');
+        }
+
+        // (2) Un-coerced replay of the exact spawn op the loop runs with a hostile
+        // angleMin: `angle = angleMin + rng()*(angleMax-angleMin)` is NaN, so
+        // `vx = cos(angle) * speed` is NaN. Write it into a live slot -- what the
+        // spawn loop would produce if the S-16 coercion were removed.
+        let v = -1;
+        for (let i = 0; i < e.max; i++) if (e.state[i] === 1) { v = i; break; }
+        if (v === -1) die('T9 control I: burst produced no live particle for the S-16 door control');
+        const angleMinRaw = NaN; // the hostile arg BEFORE coercion
+        const rawAngle = angleMinRaw + 0.5 * (0 - angleMinRaw); // rng()===0.5, angleMax===0
+        e.vx[v] = Math.cos(rawAngle) * 60; // cos(NaN) * speed -> NaN
+        if (aliveFinite(e)) {
+            die('T9 control I: an un-coerced hostile-angle spawn stayed finite -- aliveFinite ' +
+                'cannot detect the S-16 poison the burst door prevents');
+        }
+    }
 }

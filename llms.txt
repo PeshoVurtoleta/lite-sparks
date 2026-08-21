@@ -2,7 +2,7 @@
 
 > Zero-GC SoA spark and debris engine. Velocity stretching, floor bounce, thermodynamic OKLCH heat gradient. One dependency.
 
-Version: 1.4.0
+Version: 1.4.1
 
 ## Install
 npm i @zakkster/lite-sparks
@@ -19,6 +19,7 @@ import { SparkEngine } from '@zakkster/lite-sparks';
 - Sleep state: physics skipped when vx=0 && vy=0 (resting sparks on floor)
 - Air forces (v1.3.0): wind (constant push), gust (sin oscillation), turbulence (per-spark curl) -- one hoisted `if (aero)` gate, skipped when all knobs 0
 - Containment (v1.3.1): walls (wallLeft/wallRight/ceiling position clamp + velocity reflection) and vortex (attract radial pull + swirl tangential push toward attractX/attractY)
+- burst() finiteness door (v1.4.1): the six cone/speed/life args (angleMin/Max, speedMin/Max, lifeMin/Max) are each coerced independently with Number.isFinite at burst() entry (angle->0, speed->0 rides the S-05 epsilon, life->0.5/1.5 defaults) so a hostile NaN/Infinity arg cannot NaN the pool through the burst() door; valid args skip coercion (fingerprints unchanged)
 - Debris vocabulary (v1.4.0): onBounce floor-contact hook (primitives only: x, post-bounce vx, weight; gated by onBounceMinSpeed on pre-bounce speed; NO try/catch), scaleTo/fadeOut per-particle enveloped render lane (life-driven width scale + alpha fade)
 - onBounce is one guarded call inside the existing floor branch; scaleTo/fadeOut ride one hoisted `if (enveloped)` render gate -- both null/off by default so the bin-batched lane is byte-identical to v1.3.1
 - SPARK_PRESETS (weld/grind/impact/ember) + burstPreset(engine,x,y,preset): zero-alloc positional adapter (no spread, no temp object)

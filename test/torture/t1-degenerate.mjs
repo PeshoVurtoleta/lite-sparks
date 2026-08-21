@@ -92,6 +92,42 @@ export function run() {
             () => 'T1.count[' + name + ']: a spawned particle is non-finite');
     }
 
+    // --- hostile burst cone/speed/life args (S-16, FIXED) ------------------
+    // The S-16 door coerces each of the six cone/speed/life args independently
+    // with Number.isFinite at burst() entry (angleMin/Max->0, speedMin/Max->0
+    // riding the S-05 epsilon, lifeMin->0.5/lifeMax->1.5). 18 lanes: each of the
+    // six args set to {NaN, +Inf, -Inf} in turn while the other five stay valid.
+    // Every lane must leave every spawned spark finite AND spawn exactly count
+    // (the door sanitizes the args; the S-02 count door still spawns count=10).
+    {
+        const COUNT = 10;
+        // [name, argIndex] -- positions into the burst arg tuple below.
+        const ARGS = [
+            ['angleMin', 0], ['angleMax', 1],
+            ['speedMin', 2], ['speedMax', 3],
+            ['lifeMin', 4], ['lifeMax', 5],
+        ];
+        const HOSTILE = [['NaN', NaN], ['+Inf', Infinity], ['-Inf', -Infinity]];
+        for (const [aname, ai] of ARGS) {
+            for (const [hname, hv] of HOSTILE) {
+                // Valid baseline for the six cone/speed/life args, one poisoned.
+                const a = [0, TAU, 100, 500, 0.5, 1.5];
+                a[ai] = hv;
+                const e = new SparkEngine(100, { rng: () => 0.5 });
+                e.burst(400, 300, COUNT, a[0], a[1], a[2], a[3], a[4], a[5]);
+                check(aliveCount(e) === COUNT,
+                    () => 'T1.burst[' + aname + '=' + hname + ']: alive=' + aliveCount(e) +
+                          ' expected ' + COUNT + ' (S-16 sanitizes args, count still spawns)');
+                check(aliveFinite(e),
+                    () => 'T1.burst[' + aname + '=' + hname + ']: a spawned spark went non-finite -- the S-16 door leaked');
+                // One physics frame must not resurrect a poison the door caught.
+                e.updateAndDraw(stubCtx, 1 / 60, W, H);
+                check(aliveFinite(e),
+                    () => 'T1.burst[' + aname + '=' + hname + ']: a spark went non-finite after one frame (S-16)');
+            }
+        }
+    }
+
     // --- life=0 spawn (S-11, FIXED) ----------------------------------------
     // lifeMin=lifeMax=0 computes life<=0; the spawn clamp keeps invLife finite
     // and colorIdx a valid index.

@@ -196,27 +196,25 @@ test('S-15 preset shape: burstPreset({}) (empty object, no count) fails closed',
     assert.equal(aliveCount(e), 0);
 });
 
-test('adversarial: burstPreset with a PARTIAL preset ({count} but no angle/speed fields) spawns count sparks but does NOT fail closed -- it inherits burst()\'s pre-existing lack of angle/speed finiteness guards', () => {
+test('adversarial: burstPreset with a PARTIAL preset ({count} but no angle/speed fields) spawns count sparks AND fails closed -- the S-16 burst finiteness door coerces the undefined angle/speed args (decisions/0014)', () => {
     // burstPreset's JSDoc requires a "like-shaped" object (all 7 fields). A
-    // caller violating that contract with a partial object is not a NEW S5
-    // regression: the raw engine.burst() API has never validated angleMin/
-    // angleMax/speedMin/speedMax for finiteness (only count, life, and the
-    // config door are guarded -- see decisions/0011-0013 and T1 degenerate).
-    // This test PINS the actual (documented, not fail-closed) behavior so
-    // nobody later "fixes" it silently and moves a fingerprint, and so the
-    // gap is visible rather than silently accepted as correct.
+    // caller violating that contract with a partial object passes `undefined`
+    // for angleMin/angleMax/speedMin/speedMax. Pre-v1.4.1 the raw engine.burst()
+    // API did not validate those (only count, life, and the config door were
+    // guarded), so this produced NaN vx/vy -- a gap this test used to PIN as
+    // documented-not-fixed. S-16 (v1.4.1) closed it: burst() now coerces each of
+    // the six cone/speed/life args independently with Number.isFinite at entry
+    // (undefined is non-finite -> 0), so a partial preset now FAILS CLOSED. This
+    // is an intended test-semantics change, not a regression (decisions/0014).
     const e = new SparkEngine(64, { rng: () => 0.5 });
     burstPreset(e, 400, 300, { count: 5 }); // angleMin/Max, speedMin/Max: undefined
     assert.equal(aliveCount(e), 5, 'the count door alone gates spawn count');
-    let sawNonFinite = false;
     for (let i = 0; i < 64; i++) {
         if (e.state[i] !== 1) continue;
-        if (!Number.isFinite(e.vx[i]) || !Number.isFinite(e.vy[i])) sawNonFinite = true;
+        assert.ok(Number.isFinite(e.vx[i]) && Number.isFinite(e.vy[i]),
+            'a partial preset ({count} only) must now FAIL CLOSED: the S-16 door coerces the ' +
+            'undefined angle/speed args to 0, so vx/vy stay finite (was NaN pre-v1.4.1; decisions/0014)');
     }
-    assert.ok(sawNonFinite,
-        'a partial preset ({count} only) was expected to produce NaN vx/vy (undefined angle arithmetic), ' +
-        'matching burst()\'s own unguarded angle/speed contract -- if this now passes, burstPreset gained ' +
-        'validation burst() itself does not have, and this pin should be revisited');
 });
 
 // ===========================================================================
