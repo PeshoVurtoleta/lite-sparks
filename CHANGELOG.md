@@ -5,9 +5,40 @@ All notable changes to `@zakkster/lite-sparks` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-08-21
+
+Docs, bench, and license session (roadmap session S6). NO engine behavior change:
+the only byte touched in `SparkEngine.js` is the `VERSION` string literal, and all
+sixteen committed torture fingerprints (`AERO_OFF_HASH = 2975953379`, wind/gust/turb,
+wall/ceil, vortex/swirl, weld/grind/impact/ember, emitter, scale/fade, plus the
+hostile-burst hash) are frozen bit-identical. `node --expose-gc test/torture.mjs`
+prints `ok` before and after.
+
+### Added
+
+- **LICENSE** file (MIT, (c) Zahary Shinikchiev), added to `package.json` `files[]`
+  so it ships in the published tarball.
+- **`bench/bench.mjs`** -- an honest engine-CPU micro-bench (warmup + 20000 reps,
+  median + min, no-op stub ctx so it measures the engine and not canvas
+  rasterization, with a node/platform/CPU provenance stamp). NOT shipped (not in
+  `files[]`, same policy as `test/`). Run: `node --expose-gc bench/bench.mjs`.
+- **README** full rewrite to the LiteSepforge blueprint spine: positioning H2,
+  runnable quick-start, a complete config reference (all 25 keys), a contract
+  constants table, three composability recipes (layering over lite-fireworks with
+  the `transparentBackground` inversion trap, a spark layer over lite-scratch-fx,
+  worker + OffscreenCanvas), zero-GC design notes, and the measured benchmark
+  table. The stale "149 lines" / "< 2KB" claims are removed (unverified numbers).
+- **llms.txt** -- a Mermaid lifecycle diagram (burst -> flight -> bounce/rest ->
+  sleep -> idle) and the bench provenance table.
+
+### Changed
+
+- Version sync 1.4.1 -> 1.5.0 across `package.json`, the `VERSION` const, and
+  `llms.txt`.
+
 ## [1.4.1] - 2026-08-21
 
-Fail-closed hardening (roadmap session S6). Closes the last unguarded door into
+Fail-closed hardening (roadmap session S5 follow-up, S-16). Closes the last unguarded door into
 the pool: `burst()`'s six cone/speed/life arguments. No new public API, no
 signature change, no hot-body change -- the per-particle spawn loop and
 `updateAndDraw` stay byte-identical, and every one of the fifteen committed

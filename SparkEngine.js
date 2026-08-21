@@ -7,7 +7,7 @@
 
 import { toCssOklch } from '@zakkster/lite-color';
 
-export const VERSION = '1.4.1';
+export const VERSION = '1.5.0';
 
 // S-06: post-move X-cull margin. A velocity-stretched tail can trail up to this
 // many px behind the head, so a spark keeps drawing until head+tail clear the

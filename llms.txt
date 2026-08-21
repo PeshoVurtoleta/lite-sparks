@@ -2,7 +2,7 @@
 
 > Zero-GC SoA spark and debris engine. Velocity stretching, floor bounce, thermodynamic OKLCH heat gradient. One dependency.
 
-Version: 1.4.1
+Version: 1.5.0
 
 ## Install
 npm i @zakkster/lite-sparks
@@ -72,6 +72,38 @@ floorY (null->h), heatColors (4 OKLCH), rng (Math.random)
 - autoClear:false draws over existing pixels (layer over a game/scratch surface)
 - floorY null means use h; set it to land sparks on a HUD bar / table edge
 - transparentBackground semantics are INVERTED vs lite-fireworks (see README)
+
+## Lifecycle
+A spark's states from spawn to idle (all in flat SoA columns, no per-particle object):
+
+```mermaid
+stateDiagram-v2
+    [*] --> Burst: burst() / emitter.step()
+    Burst --> Flight: ring cursor claims a slot (overwrite-oldest)
+    Flight --> Flight: integrate gravity + friction + aero + vortex, stretch tail
+    Flight --> Bounce: y > floorY
+    Bounce --> Flight: vy *= -restitution, vx *= floorFriction (still moving)
+    Bounce --> Rest: |vy| < 20 -> vy = 0
+    Rest --> Sleep: also |vx| < 5 -> vx = 0 (physics body skipped)
+    Flight --> Idle: life <= 0 OR x outside +/-200px cull margin
+    Bounce --> Idle: life <= 0
+    Rest --> Idle: life <= 0
+    Sleep --> Idle: life <= 0
+    Idle --> [*]: state = 0 (slot reusable)
+    Idle --> Burst: slot reclaimed by a later burst
+```
+
+## Benchmarks (engine-only, stub ctx)
+Provenance: node v26.3.1, darwin/arm64, Apple M4 Pro, 2026-08-21, pool=5000, dt=1/60.
+No-op stub ctx (every method () => {}) -- engine CPU only, NOT canvas rasterization.
+Methodology: 2000 warmup discarded, 20000 reps, MEDIAN reported. Run: node --expose-gc bench/bench.mjs
+(bench/ is not shipped -- not in package.json files[], same policy as test/).
+
+| Lane | Measures | Median | Min |
+| --- | --- | --- | --- |
+| Burst throughput | one 300-spark radial burst() | 0.0118 ms/burst (25.4 M sparks/sec) | 0.0100 ms |
+| Full-frame @ 5000 alive | one updateAndDraw on a saturated pool | 0.058 ms/frame | 0.047 ms |
+| Sustained emission | emitter.step + full updateAndDraw, ~650 alive | 0.0158 ms/frame | 0.0134 ms |
 
 ## Usage
 const sparks = new SparkEngine(5000);
