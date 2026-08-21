@@ -8,8 +8,8 @@
     <!--
       Local dogfood build: this demo runs the WORKING-TREE engine
       (../SparkEngine.js), not a published npm version, so every feature
-      through v1.4.0 (air + containment + debris vocabulary) is exercised
-      before release.
+      through v1.5.0 (air + containment + debris vocabulary + diagnostics)
+      is exercised before release.
       The engine's only dependency, @zakkster/lite-color, is pulled from
       the CDN via the import map below.
     -->
@@ -51,6 +51,7 @@
             top: 0;
             left: 0;
             z-index: 1;
+            touch-action: none;
         }
 
         #panel {
@@ -165,7 +166,7 @@
 
 <div id="panel">
     <h2>Spark Engine Config</h2>
-    <p class="hint">Click / drag on the canvas to emit. Working-tree build v1.4.0.</p>
+    <p class="hint">Click / drag on the canvas to emit. Working-tree build v1.5.0.</p>
 
     <h3>Ballistics</h3>
     <div class="control-group">
@@ -248,6 +249,21 @@
         <span>Bounce flash (onBounce)</span>
         <input type="checkbox" id="bounceToggle">
     </div>
+
+    <h3>Diagnostics (v1.5.0)</h3>
+    <div class="toggle-row">
+        <span>Stress spawn (burst every frame)</span>
+        <input type="checkbox" id="stressToggle">
+    </div>
+    <div class="toggle-row">
+        <span>Under-layer (autoClear off, painted band)</span>
+        <input type="checkbox" id="layerToggle">
+    </div>
+    <div class="control-group">
+        <label>Alive <span id="rdAlive">0</span></label>
+        <label>Frame ms <span id="rdMs">0.00</span></label>
+        <label>Sparks/frame <span id="rdSpf">0</span></label>
+    </div>
 </div>
 
 <canvas id="stage"></canvas>
@@ -284,6 +300,15 @@
     // stepped every frame (fractional-carry, zero alloc), nulled when off.
     let fountain = null;
 
+    // v1.5.0 diagnostics scene. All scalar state -- the two guarded scenes
+    // (stress spawn + under-layer) and the throttled readouts add only branches
+    // to the hot loop, never allocation. STRESS_PER_FRAME sparks are burst each
+    // frame when stressOn; EMA_A smooths the frame-ms readout; READ_EVERY masks
+    // the textContent writes to ~6Hz so no toFixed/write lands per frame.
+    let stressOn = false, layerOn = false, emaMs = 0, frameTick = 0,
+        sparksThisFrame = 0, aliveNow = 0;
+    const STRESS_PER_FRAME = 180, EMA_A = 0.1, READ_EVERY = 10;
+
     function updateSize() {
         w = window.innerWidth;
         h = window.innerHeight;
@@ -294,6 +319,31 @@
         // Bounds that depend on the viewport are recomputed here so a resize
         // never leaves a wall or vortex centre stranded at the old dimensions.
         applyFieldBounds();
+        // A resize clears the backing store, so repaint the under-layer band
+        // when its scene is live (cold: only on resize, never per frame).
+        if (layerOn) drawUnderLayer();
+    }
+
+    // v1.5.0 under-layer scene (COLD -- called only from the layer toggle and
+    // from updateSize on resize). Paints a static gradient band plus 3 markers
+    // straight to the canvas; with autoClear off the loop draws sparks on top
+    // of it and the band survives. Self-contained: no sibling-package import.
+    function drawUnderLayer() {
+        const bandTop = h * 0.6, bandH = h * 0.3;
+        const grad = ctx.createLinearGradient(0, bandTop, 0, bandTop + bandH);
+        grad.addColorStop(0, 'rgba(255, 102, 0, 0.05)');
+        grad.addColorStop(1, 'rgba(255, 102, 0, 0.22)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, bandTop, w, bandH);
+        // Three markers evenly spaced along the band's mid-line.
+        const midY = bandTop + bandH / 2;
+        ctx.fillStyle = 'rgba(255, 211, 107, 0.5)';
+        for (let m = 1; m <= 3; m++) {
+            const mx = (w * m) / 4;
+            ctx.beginPath();
+            ctx.arc(mx, midY, 8, 0, Math.PI * 2);
+            ctx.fill();
+        }
     }
 
     // UI WIRING
@@ -308,7 +358,12 @@
         swirl: document.getElementById('swirl'), swirlVal: document.getElementById('swirlVal'),
         walls: document.getElementById('wallsToggle'),
         clear: document.getElementById('clearToggle'),
-        bg: document.getElementById('bgToggle')
+        bg: document.getElementById('bgToggle'),
+        stress: document.getElementById('stressToggle'),
+        layer: document.getElementById('layerToggle'),
+        rdAlive: document.getElementById('rdAlive'),
+        rdMs: document.getElementById('rdMs'),
+        rdSpf: document.getElementById('rdSpf')
     };
 
     let currentMode = 'weld';
@@ -349,7 +404,9 @@
         sparks.config.turbulence = parseFloat(dom.turb.value);
         sparks.config.attract = parseFloat(dom.attract.value);
         sparks.config.swirl = parseFloat(dom.swirl.value);
-        sparks.config.autoClear = !dom.clear.checked;
+        // autoClear has ONE owner of precedence: the under-layer scene wins
+        // (it needs trails to keep the painted band), else the Trails checkbox.
+        sparks.config.autoClear = layerOn ? false : !dom.clear.checked;
         applyFieldBounds();
 
         document.body.className = dom.bg.checked ? 'light' : 'dark';
@@ -432,26 +489,69 @@
         }
     });
 
+    // v1.5.0 stress scene: flip the scalar only. The loop reads stressOn and
+    // does the heavy burst -- this handler allocates nothing and emits nothing.
+    dom.stress.addEventListener('change', (e) => {
+        stressOn = e.target.checked;
+    });
+
+    // v1.5.0 under-layer scene: flip layerOn, let updateUI own autoClear
+    // precedence (FACT 2 -- layerOn wins over the Trails checkbox), then paint
+    // the band once (cold). Turning it off restores checkbox-driven autoClear.
+    dom.layer.addEventListener('change', (e) => {
+        layerOn = e.target.checked;
+        updateUI();
+        if (layerOn) drawUnderLayer();
+    });
+
     // INTERACTION & LOOP
     let isDrawing = false;
     let mouseX = w / 2, mouseY = h / 2;
 
-    canvas.addEventListener('mousedown', (e) => {
+    // Pointer events cover mouse, touch and pen from one path. setPointerCapture
+    // keeps the drag live when the pointer leaves the canvas; pointercancel and
+    // pointerup both release it. Same mouseX/mouseY/isDrawing writes as before.
+    canvas.addEventListener('pointerdown', (e) => {
         isDrawing = true;
         mouseX = e.clientX;
         mouseY = e.clientY;
+        canvas.setPointerCapture(e.pointerId);
     });
-    canvas.addEventListener('mousemove', (e) => {
+    canvas.addEventListener('pointermove', (e) => {
         mouseX = e.clientX;
         mouseY = e.clientY;
     });
-    canvas.addEventListener('mouseup', () => isDrawing = false);
+    canvas.addEventListener('pointerup', (e) => {
+        isDrawing = false;
+        canvas.releasePointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointercancel', (e) => {
+        isDrawing = false;
+        canvas.releasePointerCapture(e.pointerId);
+    });
 
     let lastTime = performance.now();
 
+    // LOOP CONTRACT: zero allocation in the untrottled path -- no literals, no
+    // `new`, no closures created here; the stress burst, fountain step and EMA
+    // are all alloc-free. No layout reads (offsetWidth / getBoundingClientRect /
+    // getComputedStyle) ever run inside this loop -- w/h come from the resize
+    // handler. Single RAF: one requestAnimationFrame(loop) drives everything.
+    // The only allocation is the throttled readout (toFixed + textContent), and
+    // it lands only on every READ_EVERY-th frame, never per frame.
     function loop(time) {
         const dt = Math.min((time - lastTime) / 1000, 0.1);
         lastTime = time;
+
+        // v1.5.0 stress scene (scalar branch): burst a fixed heavy count each
+        // frame so the readouts and pool have real load. Alloc-free -- burst
+        // fills the pre-allocated pool, STRESS_PER_FRAME is a const.
+        if (stressOn) {
+            sparks.burst(w / 2, h / 3, STRESS_PER_FRAME, 0, Math.PI * 2, 200, 900);
+            sparksThisFrame = STRESS_PER_FRAME;
+        } else {
+            sparksThisFrame = 0;
+        }
 
         if (isDrawing) {
             if (currentMode === 'weld') {
@@ -488,6 +588,22 @@
             ctx.stroke();
         }
         ctx.globalAlpha = 1;
+
+        // v1.5.0 readouts. The EMA scalar update runs every frame (alloc-free);
+        // the alive scan + textContent writes are throttled to every READ_EVERY
+        // frame so no toFixed/write lands per frame. state is a binary
+        // Uint8Array -- 1 == alive (sleeping/resting sparks stay 1), 0 == dead.
+        emaMs += (dt * 1000 - emaMs) * EMA_A;
+        if ((frameTick % READ_EVERY) === 0) {
+            const state = sparks.state;
+            let n = 0;
+            for (let i = 0; i < state.length; i++) if (state[i] === 1) n++;
+            aliveNow = n;
+            dom.rdAlive.textContent = aliveNow;
+            dom.rdMs.textContent = emaMs.toFixed(2);
+            dom.rdSpf.textContent = sparksThisFrame;
+        }
+        frameTick++;
 
         requestAnimationFrame(loop);
     }
