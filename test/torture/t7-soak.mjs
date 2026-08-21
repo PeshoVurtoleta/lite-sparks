@@ -17,7 +17,7 @@
  * intra-cycle churn is not misread as growth.
  */
 
-import { SparkEngine } from '../../SparkEngine.js';
+import { SparkEngine, makeEmitter } from '../../SparkEngine.js';
 import { createLeakTracker } from '@zakkster/lite-leak';
 import { check, stubCtx, aliveCount, aliveFinite } from './harness.mjs';
 
@@ -41,6 +41,13 @@ export function run() {
         wallLeft: 100, wallRight: 700, ceiling: 50,
         attract: 2000, swirl: 500, attractX: W / 2, attractY: H / 2,
     });
+    // S-15 emitter drain lane. A fractional-carry emitter fills the pool over a
+    // few steps, is then STOPPED (no more steps), and the pool is run to death.
+    // The engine holds no reference to the emitter, so the pool must drain to
+    // empty by life expiry alone -- a stopped emitter leaks no live spark (ADR
+    // 0011). Short life (<= 1.0) so DRAIN_FRAMES (4s) exhausts every spark.
+    const emitEngine = new SparkEngine(MAX, { rng: () => 0.5 });
+    const emitter = makeEmitter({ x: W / 2, y: H / 2, rate: 400, cone: 0.6, speed: 500, life: 1.0 });
     const tracker = createLeakTracker({ name: 'sparks-soak' });
 
     globalThis.gc();
@@ -80,6 +87,22 @@ export function run() {
                   ' alive -- a contained spark did not drain by life expiry (S-14)');
         check(aliveFinite(contain),
             () => 'T7.contain: cycle ' + c + ' left a non-finite live particle');
+
+        // Emitter drain lane: step the emitter to FILL, then STOP it and run to
+        // death. A few high-rate steps fill the pool (rate 400/s, dt 1/60 ~ 6.7
+        // sparks/step); after 10 steps the pool is non-empty. Then no more steps
+        // (the emitter is stopped) and the pool is run to death -- it MUST return
+        // to empty, proving a stopped emitter leaks no live spark.
+        emitter.carry = 0; // reset the accumulator each cycle (fresh fill)
+        for (let s = 0; s < 10; s++) { emitter.step(emitEngine, 1 / 60); emitEngine.updateAndDraw(stubCtx, 1 / 60, W, H); }
+        check(aliveCount(emitEngine) > 0,
+            () => 'T7.emitter: cycle ' + c + ' emitter filled 0 sparks -- the fill is vacuous');
+        for (let f = 0; f < DRAIN_FRAMES; f++) emitEngine.updateAndDraw(stubCtx, 0.1, W, H);
+        check(aliveCount(emitEngine) === 0,
+            () => 'T7.emitter: cycle ' + c + ' left ' + aliveCount(emitEngine) +
+                  ' alive after a stopped emitter drained -- a spark did not die (S-15)');
+        check(aliveFinite(emitEngine),
+            () => 'T7.emitter: cycle ' + c + ' left a non-finite live particle');
     }
 
     check(tracker.size() === 0,

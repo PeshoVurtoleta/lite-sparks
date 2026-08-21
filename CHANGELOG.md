@@ -5,6 +5,50 @@ All notable changes to `@zakkster/lite-sparks` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-21
+
+The debris vocabulary (roadmap session S5). Two new expressive surfaces and a
+cold authoring layer, all off by default and byte-identical to v1.3.1 on the hot
+path: a floor-contact hook (`onBounce`), a per-particle enveloped render lane
+(`scaleTo`/`fadeOut`), preset descriptors + a zero-alloc positional adapter, and
+a fractional-carry emitter. Proven: the eight committed fingerprints
+(`AERO_OFF_HASH = 2975953379`, wind/gust/turb, wall/ceil, vortex/swirl) are all
+unchanged, and a `NaN` scaleTo/fadeOut does NOT flip the enveloped lane on (the
+S-01 poison class is coerced away in the cold constructor before any hot read).
+
+### Added
+
+- **S-15** `onBounce(x, vx, weight)`. An optional floor-contact hook called with
+  primitives only when a spark bounces AND its PRE-bounce downward speed exceeds
+  `onBounceMinSpeed`. One guarded call inside the existing floor branch (null
+  default -> byte-identical dead). There is NO try/catch: a throwing hook must
+  surface, not be swallowed mid-frame. Rationale in `decisions/0012-onbounce.md`.
+- **S-15** `scaleTo` / `fadeOut` enveloped render lane. When either is non-default
+  the render phase takes a per-particle stroke lane where each spark's line width
+  scales toward `weight * scaleTo` and its alpha fades toward `1 - fadeOut` over
+  its life (both derived from the existing life/invLife columns, 0 rng). One
+  hoisted `if (enveloped)` gate; the batched lane is the byte-identical else
+  branch. The lane restores `globalAlpha = 1` (fail closed). Rationale in
+  `decisions/0013-scale-fade.md`.
+- **S-15** `SPARK_PRESETS` (frozen `weld` / `grind` / `impact` / `ember`
+  descriptors) + `burstPreset(engine, x, y, preset)`, a positional adapter that
+  reads a preset's fields straight into `engine.burst` with no spread, no temp
+  array, and no temp object -- zero allocation per call.
+- **S-15** `makeEmitter({ x, y, rate, cone, speed, life })`. A fractional-carry
+  emitter: `step(engine, dt)` accumulates `rate * dt`, spawns the integer part,
+  and keeps the remainder, so a sub-frame rate averages exactly `rate` over time
+  (unlike an integer-per-frame emitter that truncates the fraction each frame).
+  Zero allocation per step. Rationale in `decisions/0011-emitters.md`.
+
+### Changed
+
+- **S-15** fail-closed debris knobs. A non-function `onBounce` -> `null`; a
+  non-finite `onBounceMinSpeed` -> `0`; a non-finite `scaleTo` -> `1`; a non-finite
+  `fadeOut` -> `0`. Coerced ONCE in the cold constructor so a `NaN` scaleTo/fadeOut
+  can never flip the enveloped lane on (`NaN !== 1` / `NaN !== 0` are `true`) and
+  feed a NaN width/alpha to every stroke -- the S-01 poison class through the
+  config door. Zero hot bytes.
+
 ## [1.3.1] - 2026-08-15
 
 Containment (roadmap session S4b, the walls + vortex wave). Sparks can now be

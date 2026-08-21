@@ -21,8 +21,11 @@
  * the gate must then reject the window. That is the T9 control, exercisable here.
  */
 
-import { SparkEngine } from '../../SparkEngine.js';
+import { SparkEngine, SPARK_PRESETS, burstPreset, makeEmitter } from '../../SparkEngine.js';
 import { runOpsGate, BREAK, stubCtx, check, die, aliveCount } from './harness.mjs';
+
+/** Shared no-op onBounce hook -- proves the hook WIRING allocates nothing. */
+const NOOP_BOUNCE = (x, vx, weight) => {};
 
 const TAU = Math.PI * 2;
 const MAX = 2000;
@@ -132,6 +135,82 @@ export function run() {
         wallLeft: 100, wallRight: 700, ceiling: 50,
         attract: 2000, swirl: 500, attractX: W / 2, attractY: H / 2,
     });
+
+    // ---- Scene E: S-15 debris-vocabulary lanes -- all allocate nothing -------
+    // Four full-pool lanes exercise the S5 surfaces and pin all 12 backing
+    // stores byte-identical: a preset-burst lane (the burstPreset positional
+    // adapter dripped into the hot loop), a no-op-onBounce lane (proves the
+    // floor-hook WIRING is zero-alloc -- the hook fires on every floor contact),
+    // an emitter-step lane (the fractional-carry emitter stepped each frame), and
+    // an enveloped lane (scaleTo + fadeOut ON -> the per-particle stroke lane)
+    // (ADR 0011/0012/0013).
+
+    // Preset lane: burstPreset(impact) every 64th frame into a filled pool.
+    {
+        const pe = new SparkEngine(MAX, { rng: () => 0.5 });
+        pe.burst(W / 2, H / 2, MAX, 0, TAU, 100, 800);
+        customLane('preset', pe, (i) => {
+            if ((i & 63) === 0) burstPreset(pe, W / 2, H / 2, SPARK_PRESETS.impact);
+            pe.updateAndDraw(stubCtx, 1 / 60, W, H);
+        });
+    }
+
+    // onBounce lane: a no-op hook fires on every floor contact (H=600 floor is
+    // in reach), so the guard + call runs constantly and must allocate nothing.
+    {
+        const be = new SparkEngine(MAX, { rng: () => 0.5, onBounce: NOOP_BOUNCE });
+        be.burst(W / 2, H / 2, MAX, 0, TAU, 100, 800);
+        customLane('onBounce', be, (i) => {
+            if ((i & 63) === 0) be.burst(W / 2, H / 2, 16, 0, TAU, 100, 800);
+            be.updateAndDraw(stubCtx, 1 / 60, W, H);
+        });
+    }
+
+    // Emitter lane: a fractional-carry emitter stepped once per frame (rate 600/s
+    // = 10 sparks/frame at dt 1/60) sustains the pool. step must be zero-alloc.
+    {
+        const ee = new SparkEngine(MAX, { rng: () => 0.5 });
+        ee.burst(W / 2, H / 2, MAX, 0, TAU, 100, 800);
+        const em = makeEmitter({ x: W / 2, y: H / 2, rate: 600, cone: 0.6, speed: 500, life: 1.0 });
+        customLane('emitter', ee, (i) => {
+            em.step(ee, 1 / 60);
+            ee.updateAndDraw(stubCtx, 1 / 60, W, H);
+        });
+    }
+
+    // Enveloped lane: scaleTo + fadeOut ON -> the per-particle stroke lane runs
+    // every frame under a full pool. It sets lineWidth/globalAlpha per spark but
+    // allocates nothing (aeroLane's default hot exercises it via config).
+    aeroLane('enveloped', { scaleTo: 0.2, fadeOut: 0.9 });
+}
+
+/**
+ * A custom hot-body lane: an already-filled `engine` and a caller-supplied `hot`
+ * body, measured and gated with all 12 backing stores pinned byte-identical.
+ */
+function customLane(name, engine, hot) {
+    const b = snapshot(engine);
+    const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+    const a = snapshot(engine);
+
+    check(a.x === b.x, () => 'T6.debris[' + name + ']: x SoA store grew ' + b.x + ' -> ' + a.x);
+    check(a.y === b.y, () => 'T6.debris[' + name + ']: y SoA store grew ' + b.y + ' -> ' + a.y);
+    check(a.vx === b.vx, () => 'T6.debris[' + name + ']: vx SoA store grew ' + b.vx + ' -> ' + a.vx);
+    check(a.vy === b.vy, () => 'T6.debris[' + name + ']: vy SoA store grew ' + b.vy + ' -> ' + a.vy);
+    check(a.life === b.life, () => 'T6.debris[' + name + ']: life SoA store grew ' + b.life + ' -> ' + a.life);
+    check(a.invLife === b.invLife, () => 'T6.debris[' + name + ']: invLife SoA store grew ' + b.invLife + ' -> ' + a.invLife);
+    check(a.weight === b.weight, () => 'T6.debris[' + name + ']: weight SoA store grew ' + b.weight + ' -> ' + a.weight);
+    check(a.state === b.state, () => 'T6.debris[' + name + ']: state SoA store grew ' + b.state + ' -> ' + a.state);
+    check(a.wBucket === b.wBucket, () => 'T6.debris[' + name + ']: wBucket store grew ' + b.wBucket + ' -> ' + a.wBucket);
+    check(a.order === b.order, () => 'T6.debris[' + name + ']: _order store grew ' + b.order + ' -> ' + a.order);
+    check(a.binCount === b.binCount, () => 'T6.debris[' + name + ']: _binCount store grew ' + b.binCount + ' -> ' + a.binCount);
+    check(a.binStart === b.binStart, () => 'T6.debris[' + name + ']: _binStart store grew ' + b.binStart + ' -> ' + a.binStart);
+
+    if (!report.ok) {
+        const g = summary.gc;
+        die('T6.debris[' + name + '] alloc gate rejected -- verdict=' + report.verdict +
+            ' source=' + summary.source + ' major=' + g.major + ' maxMs=' + g.maxMs.toFixed(3));
+    }
 }
 
 /**

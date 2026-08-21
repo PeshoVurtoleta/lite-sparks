@@ -8,7 +8,8 @@
     <!--
       Local dogfood build: this demo runs the WORKING-TREE engine
       (../SparkEngine.js), not a published npm version, so every feature
-      through v1.3.1 (air + containment) is exercised before release.
+      through v1.4.0 (air + containment + debris vocabulary) is exercised
+      before release.
       The engine's only dependency, @zakkster/lite-color, is pulled from
       the CDN via the import map below.
     -->
@@ -164,7 +165,7 @@
 
 <div id="panel">
     <h2>Spark Engine Config</h2>
-    <p class="hint">Click / drag on the canvas to emit. Working-tree build v1.3.1.</p>
+    <p class="hint">Click / drag on the canvas to emit. Working-tree build v1.4.0.</p>
 
     <h3>Ballistics</h3>
     <div class="control-group">
@@ -231,12 +232,28 @@
         <button id="btnTornado">Tornado</button>
         <button id="btnBoxed">Boxed</button>
     </div>
+
+    <h3>Vocabulary (v1.4.0)</h3>
+    <div class="presets">
+        <button id="btnPreWeld">weld</button>
+        <button id="btnPreGrind">grind</button>
+        <button id="btnPreImpact">impact</button>
+        <button id="btnPreEmber">ember</button>
+    </div>
+    <div class="toggle-row">
+        <span>Fountain (makeEmitter, sustained)</span>
+        <input type="checkbox" id="fountainToggle">
+    </div>
+    <div class="toggle-row">
+        <span>Bounce flash (onBounce)</span>
+        <input type="checkbox" id="bounceToggle">
+    </div>
 </div>
 
 <canvas id="stage"></canvas>
 
 <script type="module">
-    import {SparkEngine} from '../SparkEngine.js';
+    import {SparkEngine, SPARK_PRESETS, burstPreset, makeEmitter} from '../SparkEngine.js';
 
     const canvas = document.getElementById('stage');
     const ctx = canvas.getContext('2d');
@@ -245,6 +262,27 @@
     let w = 0, h = 0;
     const dpr = window.devicePixelRatio || 1;
     const WALL_INSET = 8; // px the box walls sit in from each edge
+
+    // v1.4.0 onBounce visual pulses. The hook fires INSIDE updateAndDraw's hot
+    // loop, so recording a bounce must allocate nothing -- a pre-allocated ring
+    // (power-of-2 mask) holds the last PULSE_CAP contact points, and the loop
+    // draws the ones still alive. onBounce also never mutates the engine.
+    const PULSE_CAP = 64, PULSE_MASK = PULSE_CAP - 1;
+    const pulseX = new Float32Array(PULSE_CAP);
+    const pulseY = new Float32Array(PULSE_CAP);
+    const pulseLife = new Float32Array(PULSE_CAP); // seconds of flash remaining
+    let pulseHead = 0;
+    let floorLine = 0; // the current floor y, captured each frame for the flash
+    function recordBounce(x, _vx, _weight) {
+        pulseX[pulseHead] = x;
+        pulseY[pulseHead] = floorLine;
+        pulseLife[pulseHead] = 0.35;
+        pulseHead = (pulseHead + 1) & PULSE_MASK;
+    }
+
+    // v1.4.0 sustained emitter. Built once when the fountain toggle turns on,
+    // stepped every frame (fractional-carry, zero alloc), nulled when off.
+    let fountain = null;
 
     function updateSize() {
         w = window.innerWidth;
@@ -362,6 +400,38 @@
         updateUI();
     };
 
+    // v1.4.0 preset buttons: burst a real SPARK_PRESETS descriptor at centre via
+    // the burstPreset positional adapter. `ember` also carries scaleTo/fadeOut
+    // HINTS (config, not burst args) that drive the enveloped render lane, so
+    // firing it applies those knobs; the other presets reset them to off.
+    function firePreset(preset, envelope) {
+        sparks.config.scaleTo = envelope ? preset.scaleTo : 1;
+        sparks.config.fadeOut = envelope ? preset.fadeOut : 0;
+        burstPreset(sparks, w / 2, h / 2, preset);
+    }
+    document.getElementById('btnPreWeld').onclick   = () => firePreset(SPARK_PRESETS.weld, false);
+    document.getElementById('btnPreGrind').onclick  = () => firePreset(SPARK_PRESETS.grind, false);
+    document.getElementById('btnPreImpact').onclick = () => firePreset(SPARK_PRESETS.impact, false);
+    document.getElementById('btnPreEmber').onclick  = () => firePreset(SPARK_PRESETS.ember, true);
+
+    // Fountain: build the fractional-carry emitter once on enable, null on disable.
+    document.getElementById('fountainToggle').addEventListener('change', (e) => {
+        fountain = e.target.checked
+            ? makeEmitter({ x: w / 2, y: h - 24, rate: 220, cone: 0.5, speed: 720, life: 1.4 })
+            : null;
+    });
+
+    // Bounce flash: wire onBounce to the zero-alloc ring recorder, gated so only
+    // firm impacts flash. Clearing the toggle restores onBounce to null.
+    document.getElementById('bounceToggle').addEventListener('change', (e) => {
+        if (e.target.checked) {
+            sparks.config.onBounce = recordBounce;
+            sparks.config.onBounceMinSpeed = 200;
+        } else {
+            sparks.config.onBounce = null;
+        }
+    });
+
     // INTERACTION & LOOP
     let isDrawing = false;
     let mouseX = w / 2, mouseY = h / 2;
@@ -397,7 +467,28 @@
             }
         }
 
+        // Sustained emitter: track the viewport, then step once (zero alloc).
+        if (fountain) { fountain.x = w / 2; fountain.y = h - 24; fountain.step(sparks, dt); }
+
+        floorLine = h - 4; // where a landed spark sits; the onBounce flash centre
         sparks.updateAndDraw(ctx, dt, w, h);
+
+        // Draw + age the onBounce flashes on top of the frame (zero alloc, no
+        // layout reads -- ctx state only). Expanding ring that fades as it ages.
+        for (let i = 0; i < PULSE_CAP; i++) {
+            const life = pulseLife[i];
+            if (life <= 0) continue;
+            pulseLife[i] = life - dt;
+            const a = life / 0.35;
+            ctx.globalAlpha = a < 0 ? 0 : a;
+            ctx.strokeStyle = '#ffd36b';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(pulseX[i], pulseY[i], (1 - a) * 22 + 3, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+
         requestAnimationFrame(loop);
     }
 

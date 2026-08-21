@@ -24,7 +24,7 @@
  * of the S-01 door closing in S1; laws 4-5 pin the S2 compositing + physics work.
  */
 
-import { SparkEngine } from '../../SparkEngine.js';
+import { SparkEngine, SPARK_PRESETS, burstPreset, makeEmitter } from '../../SparkEngine.js';
 import { makePrng, SEED, check, stubCtx, aliveCount, aliveFinite } from './harness.mjs';
 
 const FRAMES = 30;
@@ -53,6 +53,22 @@ const WALL_HASH = 3228719645;
 const CEIL_HASH = 2199078978;
 const VORTEX_HASH = 359116824;
 const SWIRL_HASH = 3915575544;
+
+// --- S-15 debris-vocabulary fingerprints (committed, default seed) ----------
+// WELD/GRIND/IMPACT/EMBER pin each preset's seeded burst trajectory (through
+// burstPreset -> engine.burst); EMITTER pins a fixed fractional-carry emitter
+// script. SCALE/FADE pin the ENVELOPED render lane -- because scale/fade change
+// only the per-stroke lineWidth/globalAlpha (not the physics columns), their
+// scenes hash the RENDER output (segment endpoints + lineWidth + globalAlpha)
+// via a recording ctx, where a physics-column hash would be identical to
+// aero-off. None may collide with AERO_OFF (ADR 0011/0012/0013).
+const WELD_HASH = 3411987285;
+const GRIND_HASH = 3633792320;
+const IMPACT_HASH = 2509786225;
+const EMBER_HASH = 1748629849;
+const EMITTER_HASH = 187321740;
+const SCALE_HASH = 567134949;
+const FADE_HASH = 1421419957;
 
 /** A deterministic float-in-[0,1) source from the seeded xorshift32. */
 function makeFloatRng(seed) {
@@ -89,6 +105,112 @@ function aeroScene(config) {
         }
     }
     return h;
+}
+
+/**
+ * S-15 preset scene: a seeded emitter firing `preset` through burstPreset every
+ * 6th frame for 90 frames. Fingerprints every live column each frame -- the
+ * preset's exact trajectory through the positional adapter.
+ */
+function presetScene(preset) {
+    const max = 256;
+    const e = new SparkEngine(max, { rng: makeFloatRng(SEED) });
+    let h = 0x811c9dc5;
+    for (let fr = 0; fr < 90; fr++) {
+        if ((fr % 6) === 0) burstPreset(e, 400, 500, preset);
+        e.updateAndDraw(stubCtx, 1 / 60, 800, 600);
+        for (let i = 0; i < max; i++) {
+            h = mix(h, e.state[i]);
+            if (e.state[i] !== 1) continue;
+            h = mix(h, bits(e.x[i]));
+            h = mix(h, bits(e.y[i]));
+            h = mix(h, bits(e.vx[i]));
+            h = mix(h, bits(e.vy[i]));
+            h = mix(h, bits(e.life[i]));
+        }
+    }
+    return h;
+}
+
+/**
+ * S-15 emitter scene: a fixed fractional-carry emitter stepped once per frame
+ * for 90 frames, fingerprinting every live column -- the emitter's cadence AND
+ * the sparks it drips (rate 100/s at dt 1/60 = 1.667/frame, so the carry emits
+ * 1 or 2 on alternating frames).
+ */
+function emitterScene() {
+    const max = 256;
+    const e = new SparkEngine(max, { rng: makeFloatRng(SEED) });
+    const em = makeEmitter({ x: 400, y: 500, rate: 100, cone: 0.5, speed: 400, life: 1.0 });
+    let h = 0x811c9dc5;
+    for (let fr = 0; fr < 90; fr++) {
+        em.step(e, 1 / 60);
+        e.updateAndDraw(stubCtx, 1 / 60, 800, 600);
+        for (let i = 0; i < max; i++) {
+            h = mix(h, e.state[i]);
+            if (e.state[i] !== 1) continue;
+            h = mix(h, bits(e.x[i]));
+            h = mix(h, bits(e.y[i]));
+            h = mix(h, bits(e.vx[i]));
+            h = mix(h, bits(e.vy[i]));
+            h = mix(h, bits(e.life[i]));
+        }
+    }
+    return h;
+}
+
+/**
+ * S-15 enveloped-render scene: the SAME seeded upward-cone emitter as aeroScene,
+ * but hashing the RENDER output through a recording ctx -- every segment endpoint
+ * plus the current lineWidth AND globalAlpha at each lineTo. scaleTo/fadeOut
+ * change only these per-stroke values (not the physics columns), so a
+ * physics-column hash would equal aero-off; hashing the draw state is what pins
+ * the enveloped lane (ADR 0013).
+ */
+function envRenderScene(config) {
+    const max = 128;
+    const e = new SparkEngine(max, { rng: makeFloatRng(SEED), ...config });
+    let h = 0x811c9dc5;
+    const recCtx = {
+        clearRect() {}, beginPath() {}, stroke() {},
+        moveTo(x, y) { h = mix(h, bits(x)); h = mix(h, bits(y)); },
+        lineTo(x, y) {
+            h = mix(h, bits(x)); h = mix(h, bits(y));
+            h = mix(h, bits(this.lineWidth)); h = mix(h, bits(this.globalAlpha));
+        },
+        strokeStyle: '', lineWidth: 1, lineCap: 'butt',
+        globalCompositeOperation: 'source-over', globalAlpha: 1,
+    };
+    for (let fr = 0; fr < 90; fr++) {
+        if ((fr % 6) === 0) e.burst(400, 500, 10, -TAU / 2, 0, 60, 420, 0.4, 1.2);
+        e.updateAndDraw(recCtx, 1 / 60, 800, 100000);
+    }
+    return h;
+}
+
+/**
+ * S-15 render probe: capture the first stroke's lineWidth + globalAlpha per
+ * frame for a single hand-seeded spark, so a witness can compare a fresh spark's
+ * width/alpha to an aged one's. Returns an array of [width, alpha, life] rows.
+ */
+function envProbe(config) {
+    const rows = [];
+    let w0 = 0, a0 = 1, got = false;
+    const rec = {
+        clearRect() {}, beginPath() {}, stroke() {}, moveTo() {},
+        lineTo() { if (!got) { w0 = this.lineWidth; a0 = this.globalAlpha; got = true; } },
+        strokeStyle: '', lineWidth: 1, lineCap: 'butt',
+        globalCompositeOperation: 'source-over', globalAlpha: 1,
+    };
+    const e = new SparkEngine(4, { rng: () => 0.5, ...config });
+    e.state[0] = 1; e.x[0] = 400; e.y[0] = 500; e.vx[0] = 10; e.vy[0] = -10;
+    e.life[0] = 2; e.invLife[0] = 0.5; e.weight[0] = 2;
+    for (let f = 0; f < 100; f++) {
+        got = false;
+        e.updateAndDraw(rec, 1 / 60, 800, 100000);
+        if (e.state[0] === 1 && got) rows.push([w0, a0, e.life[0]]);
+    }
+    return rows;
 }
 
 export function run() {
@@ -567,5 +689,117 @@ export function run() {
                     () => 'T0.swirl: rerun ' + r + ' diverged at channel ' + k + ' -- swirl is not deterministic');
             }
         }
+    }
+
+    // --- Law 14: S-15 presets -- committed hashes + alive-count witness -----
+    // Each preset, fired through burstPreset (the zero-alloc positional adapter),
+    // pins its exact seeded trajectory. The witness is the conservation contract:
+    // a preset fired into an empty pool leaves exactly preset.count sparks alive
+    // (the adapter passes count straight through, no spread, no drop) (ADR 0011).
+    {
+        const weld = presetScene(SPARK_PRESETS.weld);
+        const grind = presetScene(SPARK_PRESETS.grind);
+        const impact = presetScene(SPARK_PRESETS.impact);
+        const ember = presetScene(SPARK_PRESETS.ember);
+        if (SEED === 0x9e3779b9) {
+            check(weld === WELD_HASH, () => 'T0.preset: weld fingerprint moved -- got ' + weld + ' want ' + WELD_HASH);
+            check(grind === GRIND_HASH, () => 'T0.preset: grind fingerprint moved -- got ' + grind + ' want ' + GRIND_HASH);
+            check(impact === IMPACT_HASH, () => 'T0.preset: impact fingerprint moved -- got ' + impact + ' want ' + IMPACT_HASH);
+            check(ember === EMBER_HASH, () => 'T0.preset: ember fingerprint moved -- got ' + ember + ' want ' + EMBER_HASH);
+        }
+        // Distinct presets produce distinct fingerprints (none is a no-op alias).
+        check(weld !== grind && grind !== impact && impact !== ember && weld !== ember,
+            () => 'T0.preset: two presets produced the same fingerprint -- a preset did nothing distinct');
+
+        // Alive-count witness: burstPreset(empty pool) -> exactly preset.count.
+        for (const key of ['weld', 'grind', 'impact', 'ember']) {
+            const preset = SPARK_PRESETS[key];
+            const e = new SparkEngine(512, { rng: () => 0.5 });
+            burstPreset(e, 400, 300, preset);
+            check(aliveCount(e) === preset.count,
+                () => 'T0.preset: burstPreset(' + key + ') left ' + aliveCount(e) +
+                      ' alive != preset.count ' + preset.count + ' (adapter dropped/added sparks)');
+        }
+
+        // A null preset is a fail-closed no-op (adapter guard).
+        const nullE = new SparkEngine(64, { rng: () => 0.5 });
+        burstPreset(nullE, 400, 300, null);
+        check(aliveCount(nullE) === 0,
+            () => 'T0.preset: burstPreset(null) spawned ' + aliveCount(nullE) + ' sparks (should be a no-op)');
+    }
+
+    // --- Law 15: S-15 emitter -- committed hash + fractional-cadence witness -
+    // The fixed emitter script pins the cadence + drip. The witness is the whole
+    // point of the carry accumulator (ADR 0011): at rate 100/s and dt 1/60 the
+    // per-frame contribution is 1.667, which an integer-per-frame emitter would
+    // truncate to 1 (60/s). The carry keeps the fraction, so over exactly 1
+    // second (60 frames) the emitter spawns 100 sparks, not 60.
+    {
+        const emit = emitterScene();
+        if (SEED === 0x9e3779b9) {
+            check(emit === EMITTER_HASH, () => 'T0.emitter: fingerprint moved -- got ' + emit + ' want ' + EMITTER_HASH);
+        }
+
+        // Fractional cadence: 1s at 100/s -> 100 alive (life 100 + tall canvas so
+        // none die/cull). A truncating integer emitter would leave 60.
+        const e = new SparkEngine(512, { rng: () => 0.5 });
+        const em = makeEmitter({ x: 400, y: 500, rate: 100, cone: 0.5, speed: 100, life: 100 });
+        for (let f = 0; f < 60; f++) { em.step(e, 1 / 60); e.updateAndDraw(stubCtx, 1 / 60, 800, 100000); }
+        const spawned = aliveCount(e);
+        check(spawned === 100,
+            () => 'T0.emitter: 1s @100/s spawned ' + spawned + ' != 100 -- the carry accumulator lost the fraction');
+        check(spawned > 60,
+            () => 'T0.emitter: spawned ' + spawned + ' <= 60 -- the emitter truncated to integer-per-frame (no carry)');
+
+        // Fail closed: a NaN dt is a no-op and never poisons the carry.
+        const bad = new SparkEngine(64, { rng: () => 0.5 });
+        const emb = makeEmitter({ x: 400, y: 500, rate: 100, cone: 0.5, speed: 100, life: 100 });
+        emb.step(bad, NaN);
+        check(Number.isFinite(emb.carry) && emb.carry === 0,
+            () => 'T0.emitter: a NaN-dt step poisoned the carry accumulator (carry=' + emb.carry + ')');
+        check(aliveCount(bad) === 0,
+            () => 'T0.emitter: a NaN-dt step spawned ' + aliveCount(bad) + ' sparks (should be a no-op)');
+    }
+
+    // --- Law 16: S-15 enveloped lanes -- committed hashes + shrink/fade witness
+    // scaleTo/fadeOut change only the per-stroke lineWidth/globalAlpha, so these
+    // scenes hash the RENDER output. The witnesses prove direction: scale shrinks
+    // an aged spark's width below a fresh spark's; fade lowers an aged spark's
+    // alpha below a fresh spark's. And the load-bearing NaN coercion: a NaN
+    // scaleTo/fadeOut must NOT flip the enveloped lane on (ADR 0013).
+    {
+        const scale = envRenderScene({ scaleTo: 0.2 });
+        const fade = envRenderScene({ fadeOut: 0.9 });
+        if (SEED === 0x9e3779b9) {
+            check(scale === SCALE_HASH, () => 'T0.envelope: scale fingerprint moved -- got ' + scale + ' want ' + SCALE_HASH);
+            check(fade === FADE_HASH, () => 'T0.envelope: fade fingerprint moved -- got ' + fade + ' want ' + FADE_HASH);
+        }
+        // The enveloped lane differs from the batched lane (scaleTo 1 / fadeOut 0).
+        const batched = envRenderScene({});
+        check(scale !== batched && fade !== batched,
+            () => 'T0.envelope: an enveloped lane rendered identically to the batched lane -- the envelope did nothing');
+
+        // Shrink witness: aged width < fresh width under scaleTo 0.2.
+        const sRows = envProbe({ scaleTo: 0.2 });
+        check(sRows.length > 2 && sRows[sRows.length - 1][0] < sRows[0][0] * 0.6,
+            () => 'T0.envelope: scaleTo=0.2 did not shrink the line width over life (fresh ' +
+                  sRows[0][0].toFixed(3) + ' -> aged ' + sRows[sRows.length - 1][0].toFixed(3) + ')');
+
+        // Fade witness: aged alpha < fresh alpha under fadeOut 0.9.
+        const fRows = envProbe({ fadeOut: 0.9 });
+        check(fRows.length > 2 && fRows[fRows.length - 1][1] < fRows[0][1] * 0.6,
+            () => 'T0.envelope: fadeOut=0.9 did not lower the alpha over life (fresh ' +
+                  fRows[0][1].toFixed(3) + ' -> aged ' + fRows[fRows.length - 1][1].toFixed(3) + ')');
+
+        // Load-bearing NaN coercion: a NaN knob must collapse to the OFF default
+        // (scaleTo 1 / fadeOut 0), NOT flip the enveloped lane on. Structural
+        // (config coerced) AND behavioural (batched fingerprint under NaN knobs).
+        const nanE = new SparkEngine(8, { rng: () => 0.5, scaleTo: NaN, fadeOut: NaN });
+        check(nanE.config.scaleTo === 1 && nanE.config.fadeOut === 0,
+            () => 'T0.envelope: NaN scaleTo/fadeOut not coerced (scaleTo=' + nanE.config.scaleTo +
+                  ' fadeOut=' + nanE.config.fadeOut + ') -- the enveloped lane would flip on (S-01 poison class)');
+        const nanRender = envRenderScene({ scaleTo: NaN, fadeOut: NaN });
+        check(nanRender === batched,
+            () => 'T0.envelope: a NaN scaleTo/fadeOut took the enveloped lane instead of the batched lane -- the NaN did NOT coerce to the off default');
     }
 }

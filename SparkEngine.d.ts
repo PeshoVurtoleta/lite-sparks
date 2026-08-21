@@ -38,6 +38,20 @@ export interface SparkConfig {
     attractX?: number;
     /** Vortex center Y. Read only when attract/swirl is non-zero. Default: 0 */
     attractY?: number;
+    /**
+     * Floor-contact hook, called with primitives only when a spark bounces AND its
+     * PRE-bounce downward speed exceeds `onBounceMinSpeed`. Receives (x, post-bounce
+     * vx, weight). It MUST NOT throw (there is no try/catch -- a throw surfaces) and
+     * MUST NOT mutate the engine mid-frame. A non-function coerces to null. null = no
+     * hook (null is not zero). Default: null
+     */
+    onBounce?: ((x: number, vx: number, weight: number) => void) | null;
+    /** Minimum PRE-bounce downward speed (px/s) for onBounce to fire; a gentle settle below it is silent. Non-finite -> 0. Default: 0 */
+    onBounceMinSpeed?: number;
+    /** Per-particle line-width multiplier reached at end of life (1 = no scale). Non-1 enables the enveloped render lane. Non-finite -> 1. Default: 1 */
+    scaleTo?: number;
+    /** Per-particle alpha reduction reached at end of life (0 = opaque, 1 = fully faded). Non-0 enables the enveloped render lane. Non-finite -> 0. Default: 0 */
+    fadeOut?: number;
     /** true = source-over (light bg), false = additive 'lighter' (dark bg). Default: false */
     transparentBackground?: boolean;
     /** true wipes the canvas each frame; false draws over existing pixels (layer over a game/scratch surface). Default: true */
@@ -103,3 +117,64 @@ export declare class SparkEngine {
     /** Release all typed arrays. Idempotent. */
     destroy(): void;
 }
+
+/**
+ * A spark preset: the seven positional `burst` fields. `ember` additionally
+ * carries `scaleTo`/`fadeOut` engine-config HINTS (pass them to the SparkEngine
+ * constructor); `burstPreset` ignores them.
+ */
+export interface SparkPreset {
+    count: number;
+    angleMin: number;
+    angleMax: number;
+    speedMin: number;
+    speedMax: number;
+    lifeMin: number;
+    lifeMax: number;
+    /** Enveloped-lane hint (ember): line-width multiplier at end of life. */
+    scaleTo?: number;
+    /** Enveloped-lane hint (ember): alpha reduction at end of life. */
+    fadeOut?: number;
+}
+
+/**
+ * Frozen preset descriptors. `weld`/`grind`/`impact` are burst-only; `ember`
+ * carries scaleTo/fadeOut hints for the enveloped render lane.
+ */
+export declare const SPARK_PRESETS: Readonly<{
+    weld: Readonly<SparkPreset>;
+    grind: Readonly<SparkPreset>;
+    impact: Readonly<SparkPreset>;
+    ember: Readonly<SparkPreset>;
+}>;
+
+/**
+ * Positional preset adapter: reads a preset's fields and calls engine.burst with
+ * them, allocating nothing (no spread, no temp object). A null preset is a no-op.
+ */
+export declare function burstPreset(
+    engine: SparkEngine, x: number, y: number, preset: SparkPreset | null | undefined
+): void;
+
+/** A fractional-carry emitter descriptor produced by `makeEmitter`. */
+export interface Emitter {
+    x: number;
+    y: number;
+    rate: number;
+    cone: number;
+    speed: number;
+    life: number;
+    /** Fractional spark credit carried across steps. */
+    carry: number;
+    /** Accumulate rate*dt, spawn the integer part, keep the remainder. Zero-alloc. */
+    step(engine: SparkEngine, dt: number): void;
+}
+
+/**
+ * Build a fractional-rate emitter. Non-finite/negative rate/speed/life -> 0 (an
+ * inert emitter); non-finite x/y/cone -> 0. The cone is a half-spread in radians
+ * around straight up (-TAU/4).
+ */
+export declare function makeEmitter(opts: {
+    x?: number; y?: number; rate?: number; cone?: number; speed?: number; life?: number;
+}): Emitter;

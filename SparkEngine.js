@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-sparks v1.3.1
+ * @zakkster/lite-sparks v1.4.0
  * Zero-GC, SoA Spark & Debris Engine
  * Features vector velocity stretching, floor restitution, and a precomputed thermodynamic heat gradient.
  * Supports dark mode (additive blending) and light mode (source-over).
@@ -7,7 +7,7 @@
 
 import { toCssOklch } from '@zakkster/lite-color';
 
-export const VERSION = '1.3.1';
+export const VERSION = '1.4.0';
 
 // S-06: post-move X-cull margin. A velocity-stretched tail can trail up to this
 // many px behind the head, so a spark keeps drawing until head+tail clear the
@@ -64,6 +64,17 @@ export class SparkEngine {
             swirl: 0,
             attractX: 0,
             attractY: 0,
+            // S-15 debris vocabulary (cold path). onBounce is a floor-contact
+            // hook called with primitives only (x, post-bounce vx, weight); null
+            // means "no hook" (null is not zero -- a function is required to
+            // fire). onBounceMinSpeed gates it on the PRE-bounce downward speed.
+            // scaleTo/fadeOut drive the per-particle enveloped render lane;
+            // scaleTo 1 + fadeOut 0 is the off default that keeps the bin-batched
+            // lane byte-identical to v1.3.1 (ADR 0011/0012/0013).
+            onBounce: null,
+            onBounceMinSpeed: 0,
+            scaleTo: 1,
+            fadeOut: 0,
             transparentBackground: false,
             autoClear: true,
             floorY: null,
@@ -106,6 +117,19 @@ export class SparkEngine {
         if (!Number.isFinite(this.config.swirl)) this.config.swirl = 0;
         if (!Number.isFinite(this.config.attractX)) this.config.attractX = 0;
         if (!Number.isFinite(this.config.attractY)) this.config.attractY = 0;
+
+        // S-15 fail-closed debris knobs (cold path). onBounce must be a function
+        // to fire -- any non-function (including undefined) collapses to null so
+        // the hot floor-branch guard `onBounce !== null` is byte-identical dead at
+        // the default. The three numerics are coerced BEFORE any hot read:
+        // scaleTo=NaN would make `NaN!==1` true and flip the enveloped lane ON
+        // (feeding NaN widths to every stroke -- the S-01 poison class through the
+        // config door), so NaN->1; fadeOut=NaN would make `NaN!==0` true, so
+        // NaN->0; onBounceMinSpeed=NaN->0. Zero hot bytes (ADR 0012/0013).
+        if (typeof this.config.onBounce !== 'function') this.config.onBounce = null;
+        if (!Number.isFinite(this.config.onBounceMinSpeed)) this.config.onBounceMinSpeed = 0;
+        if (!Number.isFinite(this.config.scaleTo)) this.config.scaleTo = 1;
+        if (!Number.isFinite(this.config.fadeOut)) this.config.fadeOut = 0;
 
         this.colors = this.config.heatColors.map(c => typeof c === 'string' ? c : toCssOklch(c));
         this._colorLen = this.colors.length;
@@ -267,6 +291,19 @@ export class SparkEngine {
         const ceiling = cfg.ceiling;
         const walls = wallLeft != null || wallRight != null || ceiling != null;
 
+        // S-15 debris hooks (cold preheader). onBounce is the floor-contact hook
+        // (null -> the hot floor-branch guard is dead); obMin gates it on the
+        // pre-bounce downward speed. scaleTo/fadeOut drive the enveloped render
+        // lane; `enveloped` is the single render gate -- scaleTo 1 && fadeOut 0 ->
+        // false -> the bin-batched lane below is byte-identical to v1.3.1. Both
+        // guards are false/null at the default, so the per-particle body and the
+        // batched render are unchanged (ADR 0012/0013).
+        const onBounce = cfg.onBounce;
+        const obMin = cfg.onBounceMinSpeed;
+        const scaleTo = cfg.scaleTo;
+        const fadeOut = cfg.fadeOut;
+        const enveloped = scaleTo !== 1 || fadeOut !== 0;
+
         const colorLen = this._colorLen;
         const colors = this.colors;
         const max = this.max;
@@ -351,6 +388,10 @@ export class SparkEngine {
 
                 if (ys[i] > floorY) {
                     ys[i] = floorY;
+                    // S-15 onBounce: capture the PRE-bounce vy (downward speed at
+                    // contact, positive) before restitution flips it, so the hook
+                    // can gate on impact strength (ADR 0012).
+                    const pvy = vys[i];
                     vys[i] *= -restitution;
                     vxs[i] *= floorFriction;
 
@@ -359,6 +400,14 @@ export class SparkEngine {
                     if (vys[i] === 0 && Math.abs(vxs[i]) < 5) {
                         vxs[i] = 0;
                     }
+
+                    // S-15 hook fires AFTER the floor resolves, on the post-bounce
+                    // vx and the spark's weight -- primitives only, no allocation.
+                    // Gated by the pre-bounce downward speed (pvy > obMin) so a
+                    // gentle settle does not fire it. null default -> byte-identical
+                    // dead. NO try/catch: a throwing hook must surface, not be
+                    // swallowed mid-frame (ADR 0012).
+                    if (onBounce !== null && pvy > obMin) onBounce(xs[i], vxs[i], weightA[i]);
                 }
 
                 // S-14 walls: reflect velocity and contain position at each set
@@ -419,21 +468,54 @@ export class SparkEngine {
         // strokeStyle/lineWidth set per non-empty bin, all its segments batched
         // into a single path. Endpoints are byte-identical to v1.1.0; only the
         // draw order within a bin and the bucket-quantized width differ (ADR 0006).
-        for (let b = 0; b < nbins; b++) {
-            const start = binStart[b];
-            const end = binStart[b + 1];
-            if (end === start) continue;
+        // S-15 render gate: `enveloped` (scaleTo!==1 || fadeOut!==0) selects a
+        // per-particle stroke lane so each spark can carry its own life-driven
+        // width scale and alpha fade. It draws the SAME segment geometry as the
+        // batched lane -- head (hx,hy) to (hx - vx*stretch, hy - vy*stretch) --
+        // one stroke per spark (the batching tradeoff, ADR 0013). At the default
+        // (`enveloped` false) the ELSE branch is the v1.3.1 bin-batched lane,
+        // byte-identical. The envelope factors derive from the remaining-life
+        // ratio (lifeA*invLifeA, 0 rng): scale runs 1 (fresh) -> scaleTo (dying),
+        // alpha runs 1 (fresh) -> 1-fadeOut (dying).
+        if (enveloped) {
+            for (let b = 0; b < nbins; b++) {
+                const start = binStart[b];
+                const end = binStart[b + 1];
+                if (end === start) continue;
 
-            ctx.strokeStyle = colors[b >> 2];
-            ctx.lineWidth = (b & 3) + 1;
-            ctx.beginPath();
-            for (let k = start; k < end; k++) {
-                const i = order[k];
-                const hx = xs[i], hy = ys[i];
-                ctx.moveTo(hx, hy);
-                ctx.lineTo(hx - vxs[i] * stretch, hy - vys[i] * stretch);
+                ctx.strokeStyle = colors[b >> 2];
+                for (let k = start; k < end; k++) {
+                    const i = order[k];
+                    const hx = xs[i], hy = ys[i];
+                    const prog = lifeA[i] * invLifeA[i]; // remaining-life ratio [0,1]
+                    ctx.lineWidth = weightA[i] * (scaleTo + (1 - scaleTo) * prog);
+                    ctx.globalAlpha = 1 - fadeOut * (1 - prog);
+                    ctx.beginPath();
+                    ctx.moveTo(hx, hy);
+                    ctx.lineTo(hx - vxs[i] * stretch, hy - vys[i] * stretch);
+                    ctx.stroke();
+                }
             }
-            ctx.stroke();
+            // Fail-closed restore: the enveloped lane is the only writer of
+            // globalAlpha, so reset it to 1 before the next frame reads it.
+            ctx.globalAlpha = 1;
+        } else {
+            for (let b = 0; b < nbins; b++) {
+                const start = binStart[b];
+                const end = binStart[b + 1];
+                if (end === start) continue;
+
+                ctx.strokeStyle = colors[b >> 2];
+                ctx.lineWidth = (b & 3) + 1;
+                ctx.beginPath();
+                for (let k = start; k < end; k++) {
+                    const i = order[k];
+                    const hx = xs[i], hy = ys[i];
+                    ctx.moveTo(hx, hy);
+                    ctx.lineTo(hx - vxs[i] * stretch, hy - vys[i] * stretch);
+                }
+                ctx.stroke();
+            }
         }
 
         ctx.globalCompositeOperation = 'source-over';
@@ -455,4 +537,108 @@ export class SparkEngine {
         // S-07/S-08 scratch: released alongside the SoA columns, idempotently.
         this.wBucket = null; this._order = null; this._binCount = null; this._binStart = null;
     }
+}
+
+// S-15 upward emission direction (cold). Canvas y grows downward, so a negative
+// sin points up; -TAU/4 is straight up. The presets and makeEmitter center their
+// cones here.
+const UP = -TAU / 4;
+
+/**
+ * S-15 spark presets (cold path). Each is a FROZEN object of the seven positional
+ * burst fields (count, angleMin, angleMax, speedMin, speedMax, lifeMin, lifeMax).
+ * `ember` additionally carries scaleTo/fadeOut HINTS -- these are engine-config
+ * values (pass them to `new SparkEngine(max, { scaleTo, fadeOut })`), not burst
+ * args, so `burstPreset` ignores them; they document the enveloped lane the
+ * preset is designed for (ADR 0011/0013). Angles are in radians, up = -TAU/4.
+ */
+export const SPARK_PRESETS = Object.freeze({
+    // Welding: a tight, near-vertical cone of fast, short-lived white-hot sparks.
+    weld: Object.freeze({
+        count: 40, angleMin: UP - 0.4, angleMax: UP + 0.4,
+        speedMin: 300, speedMax: 900, lifeMin: 0.3, lifeMax: 0.9,
+    }),
+    // Grinding: a wide upward fan, medium speed and life.
+    grind: Object.freeze({
+        count: 30, angleMin: UP - 1.1, angleMax: UP + 1.1,
+        speedMin: 200, speedMax: 700, lifeMin: 0.4, lifeMax: 1.1,
+    }),
+    // Impact: a full 360-degree radial burst, high speed, short life.
+    impact: Object.freeze({
+        count: 60, angleMin: 0, angleMax: TAU,
+        speedMin: 150, speedMax: 800, lifeMin: 0.2, lifeMax: 0.7,
+    }),
+    // Ember: a gentle upward drift, slow and long-lived -- designed for the
+    // enveloped lane (run the engine with the scaleTo/fadeOut hints below).
+    ember: Object.freeze({
+        count: 20, angleMin: UP - 0.6, angleMax: UP + 0.6,
+        speedMin: 40, speedMax: 160, lifeMin: 1.2, lifeMax: 2.4,
+        scaleTo: 0.2, fadeOut: 0.9,
+    }),
+});
+
+/**
+ * S-15 positional preset adapter (cold path). Reads a preset's fields and calls
+ * engine.burst with them POSITIONALLY -- no spread, no temp array, no temp object
+ * per call, so it allocates nothing (ADR 0011). A null/undefined preset is a
+ * no-op (fail closed). Config-hint fields on the preset (scaleTo/fadeOut) are
+ * ignored here -- they belong on the engine, not a burst.
+ * @param {SparkEngine} engine
+ * @param {number} x
+ * @param {number} y
+ * @param {object} preset One of SPARK_PRESETS (or a like-shaped object).
+ */
+export function burstPreset(engine, x, y, preset) {
+    if (preset == null) return;
+    engine.burst(
+        x, y, preset.count,
+        preset.angleMin, preset.angleMax,
+        preset.speedMin, preset.speedMax,
+        preset.lifeMin, preset.lifeMax
+    );
+}
+
+/**
+ * S-15 fractional-rate emitter (cold constructor, zero-alloc step). Returns a
+ * descriptor holding a `carry` accumulator: each `step(engine, dt)` adds
+ * `rate * dt` sparks-worth of fractional credit, spawns the integer part, and
+ * keeps the remainder -- so a sub-frame rate (e.g. 2.5/frame) emits 2 or 3
+ * sparks on alternating frames and averages exactly `rate` over time, unlike an
+ * integer-per-frame emitter that would truncate the fraction away every frame
+ * (ADR 0011). step calls engine.burst with derived cone/speed/life fields and
+ * allocates nothing (every operand is a stored scalar or a stack local).
+ *
+ * Fail closed at construction: a non-finite/negative rate/speed/life -> 0
+ * (an inert emitter that spawns nothing), a non-finite x/y/cone -> 0.
+ *
+ * @param {{x?:number,y?:number,rate?:number,cone?:number,speed?:number,life?:number}} opts
+ * @returns {{x:number,y:number,rate:number,cone:number,speed:number,life:number,carry:number,step:(engine:SparkEngine,dt:number)=>void}}
+ */
+export function makeEmitter(opts) {
+    const o = opts || {};
+    const x = Number.isFinite(o.x) ? o.x : 0;
+    const y = Number.isFinite(o.y) ? o.y : 0;
+    const rate = Number.isFinite(o.rate) && o.rate > 0 ? o.rate : 0;
+    const cone = Number.isFinite(o.cone) && o.cone > 0 ? o.cone : 0;
+    const speed = Number.isFinite(o.speed) && o.speed > 0 ? o.speed : 0;
+    const life = Number.isFinite(o.life) && o.life > 0 ? o.life : 0;
+    return {
+        x, y, rate, cone, speed, life, carry: 0,
+        step(engine, dt) {
+            // Fail closed: a non-positive/NaN dt or rate contributes nothing and
+            // never poisons the carry accumulator (a NaN would stick forever).
+            if (!(dt > 0) || !(this.rate > 0)) return;
+            this.carry += this.rate * dt;
+            const n = this.carry | 0;      // integer sparks to emit this step
+            this.carry -= n;               // keep the fractional remainder
+            if (n > 0) {
+                engine.burst(
+                    this.x, this.y, n,
+                    UP - this.cone, UP + this.cone,
+                    this.speed * 0.5, this.speed,
+                    this.life * 0.5, this.life
+                );
+            }
+        },
+    };
 }

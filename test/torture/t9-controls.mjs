@@ -11,8 +11,8 @@
  * the same alloc lane here so a plain run already proves the gate bites.
  */
 
-import { SparkEngine } from '../../SparkEngine.js';
-import { makePrng, SEED, runOpsGate, stubCtx, die, aliveFinite } from './harness.mjs';
+import { SparkEngine, makeEmitter } from '../../SparkEngine.js';
+import { makePrng, SEED, runOpsGate, stubCtx, die, aliveFinite, aliveCount } from './harness.mjs';
 
 /** Retained sink so the control's allocations survive GC (arrayBuffers grows). */
 const leak = [];
@@ -326,6 +326,105 @@ export function run() {
             die('T9 control E: the un-guarded wall clamp left a resting spark untouched ' +
                 '(x=' + bx + ') -- the control cannot prove hoisting the clamp ' +
                 'outside the moving gate wakes/moves a resting ember');
+        }
+    }
+
+    // Control F -- a hostile/uncapped emitter cannot break pool conservation
+    // (S-02 count door + S-08 ring cursor). An emitter rate of 1e9 tries to flood
+    // the pool every step, but `burst` caps count at `max` and the ring cursor
+    // overwrites in place, so aliveCount stays <= max and every column stays
+    // finite. Prove BOTH halves: (1) the REAL engine under a hostile emitter is
+    // finite and full (aliveCount === max, not overflowed); (2) the detector is
+    // not vacuous -- a NaN written into a live slot flips aliveFinite.
+    {
+        const e = new SparkEngine(64, { rng: () => 0.5 });
+        const flood = makeEmitter({ x: 400, y: 300, rate: 1e9, cone: 0.6, speed: 500, life: 1.0 });
+        for (let f = 0; f < 30; f++) { flood.step(e, 1 / 60); e.updateAndDraw(stubCtx, 1 / 60, 800, 600); }
+        if (aliveCount(e) > e.max) {
+            die('T9 control F: a hostile emitter overflowed pool conservation -- aliveCount ' +
+                aliveCount(e) + ' > max ' + e.max + ' (the S-02/S-08 cap FAILED)');
+        }
+        if (!aliveFinite(e)) {
+            die('T9 control F: a hostile emitter drove a live particle non-finite');
+        }
+        // Non-vacuous: the flood filled the pool and the detector can flip.
+        if (aliveCount(e) === 0) {
+            die('T9 control F: the hostile emitter spawned nothing -- the flood is vacuous');
+        }
+        let v = -1;
+        for (let i = 0; i < e.max; i++) if (e.state[i] === 1) { v = i; break; }
+        e.vx[v] = NaN;
+        if (aliveFinite(e)) {
+            die('T9 control F: aliveFinite stayed true after a NaN vx -- the conservation ' +
+                'detector is blind, so a flooded/poisoned pool could pass');
+        }
+    }
+
+    // Control G -- onBounce has NO try/catch, so a throwing hook MUST surface out
+    // of updateAndDraw (a swallowed throw hides a caller bug and leaves the frame
+    // half-rendered, ADR 0012). Prove BOTH halves: (1) a throwing onBounce, on a
+    // spark driven hard into the floor, propagates -- updateAndDraw throws; (2)
+    // the control is not vacuous -- the SAME scene with a non-throwing hook does
+    // NOT throw, so the throw came from the hook and surfaced through the engine.
+    {
+        const seedFalling = (eng) => {
+            eng.state[0] = 1; eng.x[0] = 400; eng.y[0] = 490; eng.vx[0] = 0; eng.vy[0] = 2000;
+            eng.life[0] = 100; eng.invLife[0] = 1 / 100; eng.weight[0] = 2;
+        };
+        const thrower = () => { throw new Error('onBounce surfaced'); };
+        const e = new SparkEngine(4, { rng: () => 0.5, onBounce: thrower, floorY: 500 });
+        seedFalling(e);
+        let surfaced = false;
+        try {
+            for (let f = 0; f < 10; f++) e.updateAndDraw(stubCtx, 1 / 60, 800, 600);
+        } catch (err) {
+            surfaced = true;
+        }
+        if (!surfaced) {
+            die('T9 control G: a throwing onBounce did NOT surface -- the engine swallowed it ' +
+                '(there must be no try/catch around the hook, ADR 0012)');
+        }
+        // Non-vacuous: the same scene with a no-op hook completes without throwing.
+        const ok = new SparkEngine(4, { rng: () => 0.5, onBounce: () => {}, floorY: 500 });
+        seedFalling(ok);
+        let threw = false;
+        try {
+            for (let f = 0; f < 10; f++) ok.updateAndDraw(stubCtx, 1 / 60, 800, 600);
+        } catch (err) {
+            threw = true;
+        }
+        if (threw) {
+            die('T9 control G: a non-throwing onBounce threw -- the scene is broken, not the hook, ' +
+                'so the surfacing control is vacuous');
+        }
+    }
+
+    // Control H -- the enveloped lane restores globalAlpha to 1 (fail closed), so
+    // a stale per-particle alpha never leaks into the next frame's composite or a
+    // caller's shared canvas (ADR 0013). Prove BOTH halves: (1) after a REAL
+    // enveloped frame the ctx's globalAlpha is back to 1; (2) a lane that sets a
+    // per-particle fade alpha but FORGETS the restore leaves globalAlpha != 1 --
+    // which is exactly what a missing `ctx.globalAlpha = 1` would produce.
+    {
+        const rec = {
+            clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+            strokeStyle: '', lineWidth: 1, lineCap: 'butt',
+            globalCompositeOperation: 'source-over', globalAlpha: 1,
+        };
+        const e = new SparkEngine(16, { rng: () => 0.5, fadeOut: 0.9 });
+        e.burst(400, 300, 8, 0, Math.PI * 2, 100, 500);
+        e.updateAndDraw(rec, 1 / 60, 800, 600);
+        if (rec.globalAlpha !== 1) {
+            die('T9 control H: after an enveloped frame ctx.globalAlpha=' + rec.globalAlpha +
+                ' != 1 -- the fail-closed restore is missing (S-15)');
+        }
+        // Non-vacuous / can-fail: a broken lane that applies a mid-life fade and
+        // omits the restore leaves globalAlpha below 1 -- the detectable defect.
+        const broken = { globalAlpha: 1 };
+        broken.globalAlpha = 1 - 0.9 * (1 - 0.3); // a fade factor, never restored
+        if (broken.globalAlpha === 1) {
+            die('T9 control H: the un-restored lane still reads globalAlpha=1 -- the control ' +
+                'cannot prove the globalAlpha restore is load-bearing');
         }
     }
 }

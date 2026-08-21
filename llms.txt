@@ -2,7 +2,7 @@
 
 > Zero-GC SoA spark and debris engine. Velocity stretching, floor bounce, thermodynamic OKLCH heat gradient. One dependency.
 
-Version: 1.3.1
+Version: 1.4.0
 
 ## Install
 npm i @zakkster/lite-sparks
@@ -19,6 +19,10 @@ import { SparkEngine } from '@zakkster/lite-sparks';
 - Sleep state: physics skipped when vx=0 && vy=0 (resting sparks on floor)
 - Air forces (v1.3.0): wind (constant push), gust (sin oscillation), turbulence (per-spark curl) -- one hoisted `if (aero)` gate, skipped when all knobs 0
 - Containment (v1.3.1): walls (wallLeft/wallRight/ceiling position clamp + velocity reflection) and vortex (attract radial pull + swirl tangential push toward attractX/attractY)
+- Debris vocabulary (v1.4.0): onBounce floor-contact hook (primitives only: x, post-bounce vx, weight; gated by onBounceMinSpeed on pre-bounce speed; NO try/catch), scaleTo/fadeOut per-particle enveloped render lane (life-driven width scale + alpha fade)
+- onBounce is one guarded call inside the existing floor branch; scaleTo/fadeOut ride one hoisted `if (enveloped)` render gate -- both null/off by default so the bin-batched lane is byte-identical to v1.3.1
+- SPARK_PRESETS (weld/grind/impact/ember) + burstPreset(engine,x,y,preset): zero-alloc positional adapter (no spread, no temp object)
+- makeEmitter({x,y,rate,cone,speed,life}): fractional-carry emitter; step(engine,dt) accumulates rate*dt, spawns the integer part, keeps the remainder -- zero alloc per step
 - Walls are one hoisted `if (walls)` after the floor block, inside the moving gate (never wake a resting ember); vortex folds into the same `if (aero)` branch
 - Vortex accel is normalized and clamped per-axis to +/-VORTEX_MAX_ACCEL (4000, 5x default gravity) so a hostile attract/swirl cannot teleport a spark
 - Aero-off + containment-off is byte-identical to v1.2.0: all knobs default 0/null -> aero+walls false -> the per-particle body is unchanged
@@ -43,13 +47,19 @@ import { SparkEngine } from '@zakkster/lite-sparks';
 - .updateAndDraw(ctx, dt, w, h) -- physics + render, call once per frame
 - .clear() -- kill all particles
 - .destroy() -- release all arrays
+- SPARK_PRESETS -- frozen { weld, grind, impact, ember } preset descriptors
+- burstPreset(engine, x, y, preset) -- zero-alloc positional preset adapter
+- makeEmitter({ x, y, rate, cone, speed, life }) -- fractional-carry emitter; .step(engine, dt)
 
 ## Config
 gravity (800), friction (0.99), floorFriction (0.85), restitution (0.4),
 stretch (0.04), drag (null->friction), wind (0), gust (0), turbulence (0),
 wallLeft (null), wallRight (null), ceiling (null), attract (0), swirl (0),
-attractX (0), attractY (0), transparentBackground (false), autoClear (true),
+attractX (0), attractY (0), onBounce (null), onBounceMinSpeed (0),
+scaleTo (1), fadeOut (0), transparentBackground (false), autoClear (true),
 floorY (null->h), heatColors (4 OKLCH), rng (Math.random)
+- onBounce(x, vx, weight): called on floor contact when pre-bounce downward speed > onBounceMinSpeed; primitives only, must NOT throw or mutate the engine mid-frame (no try/catch); null = no hook (null is not zero)
+- scaleTo: per-particle line-width multiplier at end of life (1 = no scale); fadeOut: alpha reduction at end of life (0 = opaque); either non-default flips the enveloped render lane on (one stroke per spark)
 - walls: wallLeft/wallRight clamp x + reflect vx, ceiling clamps y + reflects vy (null = no wall; null is not zero)
 - vortex: attract pulls toward (attractX, attractY), swirl adds a perpendicular tangential push; both clamped per-axis to +/-4000 px/s^2
 - walls + vortex act only on MOVING sparks (inside the S-05 sleep gate) -- they never wake a resting ember
